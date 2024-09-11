@@ -74,7 +74,8 @@ class SparsityPredictor(torch.nn.Module):
         return (
             -1 * torch.log(self.alpha) * (1 - self.alpha)
             - self.alpha * torch.log(1 - self.alpha)
-            + torch.log(torch.tensor(0.5)).to(self.alpha.device)
+            + (torch.tensor(1-self.sparsity_level) * torch.log(torch.tensor(self.sparsity_level))).to(self.alpha.device)
+            + (torch.tensor(self.sparsity_level) * torch.log(torch.tensor(1 - self.sparsity_level))).to(self.alpha.device)
         ).sum()
 
     def calculate_l1_loss(self):
