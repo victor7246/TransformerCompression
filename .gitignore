@@ -13,6 +13,11 @@ log/
 wandb/*
 experiments/wandb/*
 
+runs/
+checkpoint*/
+*.bin
+*.ckpt
+
 # User-specific files
 *.rsuser
 *.suo

@@ -87,9 +87,12 @@ class SparsityPredictor(torch.nn.Module):
         # if weight_matrix.shape[0] == self.hidden_size:
         #     proj_ = self.proj_hidden(weight_matrix.T)
         #     alpha = nn.Sigmoid()(proj_ @ self.col_sparsities)[:,0]
+        #print (weight_matrix)
+        #print (self.proj_intermediate.weight.data)
+
         if weight_matrix.shape[0] == self.intermediate_size:  # (3072, 768)
             proj_ = self.proj_intermediate(weight_matrix)  # (3072, 3072)
-            _, s, _ = torch.svd(self.proj_intermediate.weight.data)
+            _, s, _ = torch.svd(cp(self.proj_intermediate.weight.data).to(torch.float32))
             #self.singular_value = s
             proj_ = proj_/s.max()
             proj_ = nn.ReLU()(proj_)
@@ -216,10 +219,6 @@ def finetune(model):
     lora_model = get_peft_model(model, lora_config)
     lora_model.print_trainable_parameters()
 
-    print (lora_model)
-
-    return lora_model
-
     # create optimizer and scheduler
     optimizer, lr_scheduler = get_optimizer_and_scheduler(lora_model, finetune_ds["train"], args)
 
@@ -329,7 +328,7 @@ def _get_parse_args():
         "--ppl-eval-seqlen", type=int, default=2048, help="Sequence length for evaluating the perplexity."
     )
 
-    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16"], default="fp32")
+    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16"], default="fp16")
     parser.add_argument("--varied-seqlen", action="store_true", help="Varied sequence lengths in the calibration data.")
 
     parser.add_argument("--finetune", action="store_true", help="Whether to finetune model.")
@@ -451,6 +450,8 @@ if __name__ == "__main__":
     if args.finetune:
         model_orig = finetune(model_orig)
 
+    model_orig.eval()
+
     dataset_ppl = gpu_utils.evaluate_ppl(model_orig, model_orig.config.pad_token_id, ppl_eval_loader)
     print(f'PPL before finetuning: {dataset_ppl:.4f}')
     #wandb.log({"pre_finetune_ppl": dataset_ppl})
@@ -471,6 +472,9 @@ if __name__ == "__main__":
             model_orig.config.hidden_size, model_orig.config.ffn_dim, args.sparsity_level
         )
 
+    #if args.dtype == "fp16":
+    #    action_model = action_model.half()
+
     action_model.to(device)
 
     action_model.train()
@@ -488,6 +492,8 @@ if __name__ == "__main__":
 
     best_accuracy = 0
 
+    scaler = torch.cuda.amp.GradScaler()
+
     for episode in tqdm(range(args.num_episodes)):
         #optimizer.zero_grad()
 
@@ -504,22 +510,20 @@ if __name__ == "__main__":
 
         for layer in model.base_model.model.model.decoder.layers:
             weight = layer.fc1.weight.data  # (3072, 768)
-            if weight.dtype == torch.float16:
-                state = Variable(cp(weight).to(torch.float32))
-            else:
-                state = Variable(cp(weight))
+            state = Variable(cp(weight))
             
             # print (weight)
 
-            o = action_model(state)  # (3072, )
-            #print (state)
-            #for name, param in action_model.named_parameters():
-            #    print (name)
-            #    print (param)
+            with torch.autocast(device_type=device, dtype=torch.float16):
+                o = action_model(state)  # (3072, )
+                #print (state)
+                #for name, param in action_model.named_parameters():
+                #    print (name)
+                #    print (param)
 
-            y = Bernoulli(o).sample()
-            #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-            row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+                y = Bernoulli(o).sample()
+                #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
+                row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
 
             # slice the intermediate and output weight matrices appropriately
             layer.fc1.out_features = len(row_indices)
@@ -562,24 +566,37 @@ if __name__ == "__main__":
 
             total_reward += reward.item()
             count += 1
+
+            #print (reward)
             
         reward_pool = discount_rewards(reward_pool)
         new_parameters = sum(p.numel() for p in model.parameters())
 
         for i in range(len(state_pool)):
-            state = state_pool[i]
-            action = Variable(action_pool[i].float())
-            reward = reward_pool[i]
+            with torch.autocast(device_type=device, dtype=torch.float16):
+                state = state_pool[i]
+                action = Variable(action_pool[i])
+                reward = reward_pool[i]
 
-            o = action_model(state)  # (3072, )
-            y = Bernoulli(o)
+                o = action_model(state)  # (3072, )
+                y = Bernoulli(o)
 
-            loss = -y.log_prob(action).sum() * reward  # Negtive score function x reward
-            loss.backward()
+                loss = -y.log_prob(action).sum() * reward  # Negtive score function x reward
+            
+            #loss.backward()
+            #print (loss)
 
-            torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad()
+            #torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
+        
+        #optimizer.step()
+        #optimizer.zero_grad()
+
+        #for name, param in action_model.named_parameters():
+        #    print (name, param)
 
         state_pool = []
         action_pool = []
@@ -600,9 +617,9 @@ if __name__ == "__main__":
             dataset_ppl2-dataset_ppl
         )
 
-        if total_reward > best_score:
-            best_score =  total_reward
-            torch.save(action_model.state_dict(), "action_model.ckpt")
-            torch.save(model.state_dict(), "sliced_model.bin")
+        #if total_reward > best_score:
+        #    best_score =  total_reward
+        #    torch.save(action_model.state_dict(), "action_model.ckpt")
+        #    #torch.save(model.state_dict(), "sliced_model.bin")
 
-# TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0 python trainable_activation_sparsity.py --log DEBUG --use_gpu --model_name facebook/opt-125m  --num_episodes 100 --learning-rate-action 0.01 --sparsity_level 0.2 --ppl-eval-dataset wikitext2            --finetune-dataset wikitext2            --finetune-train-nsamples 8000            --finetune-train-seqlen 1024            --finetune-train-batch-size 3            --lora-alpha 10            --lora-r 32            --lora-dropout 0.05            --lora-target-option attn_head_and_mlp            --eval-steps 16            --save-steps 16 --finetune --no-wandb --epochs 3
+# TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py --log DEBUG --use_gpu --model_name facebook/opt-125m  --num_episodes 100 --learning-rate-action 0.01 --sparsity_level 0.2 --ppl-eval-dataset wikitext2            --finetune-dataset wikitext2            --finetune-train-nsamples 8000            --finetune-train-seqlen 1024            --finetune-train-batch-size 3            --lora-alpha 10            --lora-r 32            --lora-dropout 0.05            --lora-target-option attn_head_and_mlp            --eval-steps 16            --save-steps 16 --finetune --no-wandb --epochs 3
