@@ -510,7 +510,7 @@ if __name__ == "__main__":
 
     for episode in tqdm(range(args.num_episodes)):
         #optimizer.zero_grad()
-
+        
         state_pool = []
         action_pool = []
         reward_pool = []
@@ -625,7 +625,7 @@ if __name__ == "__main__":
 
         #model.train()
         #model = finetune(model, skip_lora=True)
-        #model.eval()
+        model.eval()
 
         dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
         print(f'PPL after sparsification: {dataset_ppl2:.4f}')
@@ -645,9 +645,56 @@ if __name__ == "__main__":
         if total_reward > best_score:
             best_score =  total_reward
             torch.save(action_model.state_dict(), "action_model.ckpt")
-            torch.save(model, "sliced_model.pt")
+            #torch.save(model, "sliced_model.pt")
 
-    model = torch.load("sliced_model.pt")
+    ######## inference ############
+    action_model.load_state_dict(torch.load("action_model.ckpt"))
+    action_model.eval()
+
+    model = cp(model_orig)
+
+    for layer in model.base_model.model.model.decoder.layers:
+        weight = layer.fc1.weight.data  # (3072, 768)
+        state = Variable(cp(weight))
+        
+        # print (weight)
+
+        with torch.autocast(device_type=device, dtype=torch.float16):
+            with torch.no_grad():
+                o = action_model(state)  # (3072, )
+                y = Bernoulli(o).sample()
+                #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
+                row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+
+        # slice the intermediate and output weight matrices appropriately
+        layer.fc1.out_features = len(row_indices)
+        layer.fc1.weight.data = (
+            layer.fc1.weight[row_indices, :]
+        )
+
+        #try:
+        layer.fc1.lora_B.default.weight.data = (
+            layer.fc1.lora_B.default.weight[row_indices, :]
+        )
+        #except:
+        #    pass
+
+        layer.fc1.bias.data = layer.fc1.bias[
+            row_indices
+        ]
+
+        # revert changes on output layer
+        layer.fc2.in_features = len(row_indices)
+        layer.fc2.weight.data = layer.fc2.weight[
+            :, row_indices
+        ]
+
+        #try:
+        layer.fc2.lora_A.default.weight.data = (
+            layer.fc2.lora_A.default.weight[:, row_indices]
+        )
+
+    #model = torch.load("sliced_model.pt")
     model.train()
     model = finetune(model, skip_lora=True)
     model.eval()
@@ -655,4 +702,4 @@ if __name__ == "__main__":
     dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
     print(f'PPL after sparsification: {dataset_ppl2:.4f}')
 
-# TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py --log DEBUG --use_gpu --model_name facebook/opt-125m  --num_episodes 50 --learning-rate-action 0.005 --sparsity_level 0.2 --ppl-eval-dataset wikitext2            --finetune-dataset wikitext2            --finetune-train-nsamples 8000            --finetune-train-seqlen 1024            --finetune-train-batch-size 3            --lora-alpha 10            --lora-r 32            --lora-dropout 0.05            --lora-target-option attn_head_and_mlp            --eval-steps 16            --save-steps 16 --finetune --no-wandb --epochs 1
+# TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py --log DEBUG --use_gpu --model_name facebook/opt-125m  --num_episodes 5 --learning-rate-action 0.005 --sparsity_level 0.2 --ppl-eval-dataset wikitext2            --finetune-dataset wikitext2            --finetune-train-nsamples 8000            --finetune-train-seqlen 1024            --finetune-train-batch-size 3            --lora-alpha 10            --lora-r 32            --lora-dropout 0.05            --lora-target-option attn_head_and_mlp            --eval-steps 16            --save-steps 16 --finetune --no-wandb --epochs 1
