@@ -46,7 +46,7 @@ from torch.nn.utils.parametrizations import orthogonal
 
 class SparsityPredictor(torch.nn.Module):
     def __init__(
-        self, hidden_size=768, intermediate_size=3072, sparsity_level=0.0
+        self, hidden_size=768, intermediate_size=3072, sparsity_level=0.2
     ):
         super(SparsityPredictor, self).__init__()
 
@@ -63,8 +63,12 @@ class SparsityPredictor(torch.nn.Module):
         self.row_sparsities = nn.Parameter(
             torch.rand(intermediate_size, 1), requires_grad=True
         )  # (3072, 1)
+        self.row_sparsities_bias = nn.Parameter(
+            torch.rand(1, 1), requires_grad=True
+        )  # (3072, 1)
         # self.col_sparsities = nn.Parameter(torch.rand(hidden_size, 1), requires_grad=True)  # (768, 1)
         self.sparsity_level = sparsity_level
+        self.density_level = 1-sparsity_level
 
         self.singular_value = None
         #for param in self.proj_intermediate.parameters():
@@ -74,15 +78,16 @@ class SparsityPredictor(torch.nn.Module):
         return (
             -1 * torch.log(self.alpha) * (1 - self.alpha)
             - self.alpha * torch.log(1 - self.alpha)
-            + (torch.tensor(1-self.sparsity_level) * torch.log(torch.tensor(self.sparsity_level))).to(self.alpha.device)
-            + (torch.tensor(self.sparsity_level) * torch.log(torch.tensor(1 - self.sparsity_level))).to(self.alpha.device)
+            + (torch.tensor(self.density_level) * torch.log(torch.tensor(self.sparsity_level))).to(self.alpha.device)
+            + (torch.tensor(self.sparsity_level) * torch.log(torch.tensor(self.density_level))).to(self.alpha.device)
         ).sum()
 
     def calculate_l1_loss(self):
-        return torch.sum(torch.abs(self.keep_probs - self.sparsity_level))
+        return torch.sum(torch.abs(self.keep_probs - self.density_level))
+        #return torch.abs((self.keep_probs > 0.5).sum()/self.keep_probs.shape[0] - self.density_level)
 
     def calculate_total_loss(self):
-        return self.calculate_KLD()  # + self.calculate_l1_loss()
+        return self.calculate_KLD()
 
     def forward(self, weight_matrix):
         # if weight_matrix.shape[0] == self.hidden_size:
@@ -93,18 +98,18 @@ class SparsityPredictor(torch.nn.Module):
 
         if weight_matrix.shape[0] == self.intermediate_size:  # (3072, 768)
             proj_ = self.proj_intermediate(weight_matrix)  # (3072, 3072)
-            _, s, _ = torch.svd(cp(self.proj_intermediate.weight.data).to(torch.float32))
+            #_, s, _ = torch.svd(cp(self.proj_intermediate.weight.data).to(torch.float32))
             #self.singular_value = s
-            proj_ = proj_/s.max()
-            proj_ = nn.ReLU()(proj_)
+            #proj_ = proj_/s.max()
+            #proj_ = nn.ReLU()(proj_)
             #proj_ = self.proj_intermediate2(proj_)
-            alpha = nn.Sigmoid()(proj_ @ self.row_sparsities)[:, 0]  # (3072, )
+            alpha = nn.Sigmoid()(proj_ @ self.row_sparsities + self.row_sparsities_bias)[:, 0]  # (3072, )
         else:
             raise ValueError("The layer does not support sparsity operation")
 
         self.alpha = alpha
 
-        m = Uniform(torch.tensor([self.sparsity_level]), torch.tensor([1.0]))
+        m = Uniform(torch.tensor([0.0]), torch.tensor([1.0]))
         eps = m.sample((alpha.shape[0],)).to(weight_matrix.device)[
             :, 0
         ]  # (3072, )
@@ -116,6 +121,8 @@ class SparsityPredictor(torch.nn.Module):
             + torch.log(alpha)
             - torch.log(1 - alpha)
         )
+
+        keep_probs = torch.clip(keep_probs, max=self.density_level)
 
         self.keep_probs = keep_probs
 
@@ -131,6 +138,7 @@ def calculate_activation_reward(weight_matrix):
 
     u,s,v = torch.svd(weight_matrix)
     x = torch.abs(s.max()-1)
+    #x = torch.abs(s.max())
     x += 0.0001
     #print ("Reward")
     #print (weight_matrix, 1/x)
@@ -187,7 +195,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
 
-def finetune(model):
+def finetune(model, skip_lora=False):
     # get the dataset for finetuning
     finetune_ds = data_utils.get_dataset(args.finetune_dataset)
     finetune_train_loader = data_utils.prepare_dataloader(
@@ -209,53 +217,57 @@ def finetune(model):
         seed=args.seed,
     )
 
-    lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=lora_target_map(args.model_name)[args.lora_target_option],
-    )
+    if skip_lora == False:
+        lora_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            task_type=TaskType.CAUSAL_LM,
+            target_modules=lora_target_map(args.model_name)[args.lora_target_option],
+        )
 
-    lora_model = get_peft_model(model, lora_config)
-    lora_model.print_trainable_parameters()
+        lora_model = get_peft_model(model, lora_config)
+    else:
+        lora_model = model
 
-    # create optimizer and scheduler
-    optimizer, lr_scheduler = get_optimizer_and_scheduler(lora_model, finetune_ds["train"], args)
+    if args.finetune:
+        lora_model.print_trainable_parameters()
+        # create optimizer and scheduler
+        optimizer, lr_scheduler = get_optimizer_and_scheduler(lora_model, finetune_ds["train"], args)
 
-    training_args = TrainingArguments(
-        output_dir=args.st_checkpoint_dir,  # output directory
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.finetune_train_batch_size,  # batch size per device during training
-        per_device_eval_batch_size=args.finetune_test_batch_size,  # batch size for evaluation
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        disable_tqdm=False,
-        load_best_model_at_end=True,
-        eval_steps=args.eval_steps,
-        evaluation_strategy=args.evaluation_strategy,
-        report_to='tensorboard',
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,  # lower eval_loss is better,
-        gradient_checkpointing=True,
-    )
+        training_args = TrainingArguments(
+            output_dir=args.st_checkpoint_dir,  # output directory
+            num_train_epochs=args.epochs,
+            per_device_train_batch_size=args.finetune_train_batch_size,  # batch size per device during training
+            per_device_eval_batch_size=args.finetune_test_batch_size,  # batch size for evaluation
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+            save_total_limit=args.save_total_limit,
+            disable_tqdm=False,
+            load_best_model_at_end=True,
+            eval_steps=args.eval_steps,
+            evaluation_strategy=args.evaluation_strategy,
+            report_to='tensorboard',
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,  # lower eval_loss is better,
+            gradient_checkpointing=True,
+        )
 
-    trainer = CustomTrainer(
-        model=lora_model,
-        tokenizer=tokenizer,
-        train_loader=finetune_train_loader,
-        test_loader=finetune_test_loader,
-        args=training_args,
-        optimizers=(optimizer, lr_scheduler),
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)],
-    )
+        trainer = CustomTrainer(
+            model=lora_model,
+            tokenizer=tokenizer,
+            train_loader=finetune_train_loader,
+            test_loader=finetune_test_loader,
+            args=training_args,
+            optimizers=(optimizer, lr_scheduler),
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)],
+        )
 
-    # required to enable gradient_checkpointing
-    lora_model.enable_input_require_grads()
+        # required to enable gradient_checkpointing
+        lora_model.enable_input_require_grads()
 
-    lora_model.train()
-    trainer.train()
+        lora_model.train()
+        trainer.train()
 
     return lora_model
 
@@ -363,6 +375,8 @@ def _get_parse_args():
         "--finetune-test-seqlen", type=int, default=2048, help="Sequence length for finetuning testing."
     )
 
+    parser.add_argument("--use-kld", action="store_true", help="To use KLD loss")
+
     parser.add_argument('--learning-rate', type=float, default=2e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-2)
     parser.add_argument('--adam-beta1', type=float, default=0.9)
@@ -448,8 +462,7 @@ if __name__ == "__main__":
         seed=args.seed,
     )
 
-    if args.finetune:
-        model_orig = finetune(model_orig)
+    model_orig = finetune(model_orig)
 
     model_orig.eval()
 
@@ -508,6 +521,7 @@ if __name__ == "__main__":
         total_loss = 0
         count = 0
         total_reward = 0
+        kld_loss = 0
 
         for layer in model.base_model.model.model.decoder.layers:
             weight = layer.fc1.weight.data  # (3072, 768)
@@ -559,7 +573,7 @@ if __name__ == "__main__":
             # print(layer)      # matrices are indeed being sliced, verified from the output
 
             # get the updated rewards
-            reward = calculate_activation_reward(layer.fc1.weight.data)
+            reward = calculate_activation_reward(layer.fc1.weight.data) #- action_model.calculate_l1_loss()
 
             state_pool.append(state)
             action_pool.append(y)
@@ -567,6 +581,9 @@ if __name__ == "__main__":
 
             total_reward += reward.item()
             count += 1
+
+            if args.use_kld:
+                kld_loss += action_model.calculate_total_loss()
 
             #print (reward)
             
@@ -587,6 +604,9 @@ if __name__ == "__main__":
             #loss.backward()
             #print (loss)
 
+            if args.use_kld:
+                loss += kld_loss
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -603,6 +623,10 @@ if __name__ == "__main__":
         action_pool = []
         reward_pool = []
 
+        #model.train()
+        #model = finetune(model, skip_lora=True)
+        #model.eval()
+
         dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
         print(f'PPL after sparsification: {dataset_ppl2:.4f}')
         #wandb.log({"post_sparsification_ppl": dataset_ppl2})
@@ -616,11 +640,19 @@ if __name__ == "__main__":
             str((1-new_parameters/orig_parameters)*100) + " %",
             "Change in ppl",
             dataset_ppl2-dataset_ppl
-        )
+        )  
 
-        #if total_reward > best_score:
-        #    best_score =  total_reward
-        #    torch.save(action_model.state_dict(), "action_model.ckpt")
-        #    #torch.save(model.state_dict(), "sliced_model.bin")
+        if total_reward > best_score:
+            best_score =  total_reward
+            torch.save(action_model.state_dict(), "action_model.ckpt")
+            torch.save(model, "sliced_model.pt")
 
-# TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py --log DEBUG --use_gpu --model_name facebook/opt-125m  --num_episodes 100 --learning-rate-action 0.01 --sparsity_level 0.2 --ppl-eval-dataset wikitext2            --finetune-dataset wikitext2            --finetune-train-nsamples 8000            --finetune-train-seqlen 1024            --finetune-train-batch-size 3            --lora-alpha 10            --lora-r 32            --lora-dropout 0.05            --lora-target-option attn_head_and_mlp            --eval-steps 16            --save-steps 16 --finetune --no-wandb --epochs 3
+    model = torch.load("sliced_model.pt")
+    model.train()
+    model = finetune(model, skip_lora=True)
+    model.eval()
+
+    dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
+    print(f'PPL after sparsification: {dataset_ppl2:.4f}')
+
+# TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py --log DEBUG --use_gpu --model_name facebook/opt-125m  --num_episodes 50 --learning-rate-action 0.005 --sparsity_level 0.2 --ppl-eval-dataset wikitext2            --finetune-dataset wikitext2            --finetune-train-nsamples 8000            --finetune-train-seqlen 1024            --finetune-train-batch-size 3            --lora-alpha 10            --lora-r 32            --lora-dropout 0.05            --lora-target-option attn_head_and_mlp            --eval-steps 16            --save-steps 16 --finetune --no-wandb --epochs 1

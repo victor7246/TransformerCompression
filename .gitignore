@@ -17,6 +17,7 @@ runs/
 checkpoint*/
 *.bin
 *.ckpt
+*.pt
 
 # User-specific files
 *.rsuser
