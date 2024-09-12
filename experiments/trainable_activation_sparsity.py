@@ -132,7 +132,7 @@ class SparsityPredictor(torch.nn.Module):
         return keep_probs
 
 
-def calculate_activation_reward(weight_matrix):
+def calculate_activation_reward_bkp(weight_matrix):
     if weight_matrix.dtype == torch.float16:
         weight_matrix = weight_matrix.to(torch.float32)
 
@@ -143,6 +143,20 @@ def calculate_activation_reward(weight_matrix):
     #print ("Reward")
     #print (weight_matrix, 1/x)
     return 1/x
+
+def calculate_activation_reward(weight_matrix):
+    if weight_matrix.dtype == torch.float16:
+        weight_matrix = weight_matrix.to(torch.float32)
+
+    u,s,v = torch.svd(weight_matrix)
+    
+    #x = torch.abs(s.max()-1)
+    #x = torch.abs(s.max())
+    #x += 0.0001
+    #print ("Reward")
+    #print (weight_matrix, 1/x)
+    #return 1/x
+    return s.mean()
 
 def discount_rewards(rewards, gamma=0.99):
     r = np.array([gamma**i * rewards[i] for i in range(len(rewards))])
