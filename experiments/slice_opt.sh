@@ -1,0 +1,21 @@
+TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py \
+    --log DEBUG \
+    --use_gpu \
+    --model_name facebook/opt-125m  \
+    --num_episodes 50 \
+    --learning-rate-action 0.005 \
+    --sparsity_level 0.2 \
+    --ppl-eval-dataset wikitext2       \
+    --finetune-dataset wikitext2         \
+    --finetune-train-nsamples 8000       \
+    --finetune-train-seqlen 1024       \
+    --finetune-train-batch-size 3         \
+    --lora-alpha 10          \
+    --lora-r 32        \
+    --lora-dropout 0.05      \
+    --lora-target-option attn_head_and_mlp      \
+    --eval-steps 16       \
+    --save-steps 16 \
+    --finetune \
+    --no-wandb \
+    --epochs 1
