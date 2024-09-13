@@ -211,6 +211,8 @@ def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
     )
 
     parser.add_argument('--use-slicing', action="store_true", help="Use slicing.")
+    parser.add_argument('--slice_uniform', default=False, action="store_true", help="Whether to slice rows uniformly at random using the provided sparsity level.")
+    parser.add_argument('--slice_with_action_model', default = False, action="store_true", help="Whether to use the trained action model to slice rows.")
     parser.add_argument('--finetune', action="store_true", help="Fine tune model.")
 
     parser.add_argument('--wandb-project', type=str, default="slicegpt-lm-eval", help="wandb project name.")
@@ -419,6 +421,88 @@ def finetune(model, skip_lora=False):
 
     return lora_model
 
+def _slice_uniformly(model, args):
+    for layer in model.base_model.decoder.layers:
+        # sample a bunch of rows uniformly at random
+        num_rows = layer.fc1.out_features
+        row_indices = torch.randperm(num_rows)[int(num_rows * args.sparsity): ].sort().values
+
+        # slice
+        layer.fc1.out_features = len(row_indices)
+        layer.fc1.weight.data = (
+            layer.fc1.weight[row_indices, :]
+        )
+
+        try:
+            layer.fc1.lora_B.default.weight.data = (
+                layer.fc1.lora_B.default.weight[row_indices, :]
+            )
+        except:
+            pass
+
+        layer.fc1.bias.data = layer.fc1.bias[
+            row_indices
+        ]
+
+        # revert changes on output layer
+        layer.fc2.in_features = len(row_indices)
+        layer.fc2.weight.data = layer.fc2.weight[
+            :, row_indices
+        ]
+
+        try:
+            layer.fc2.lora_A.default.weight.data = (
+                layer.fc2.lora_A.default.weight[:, row_indices]
+            )
+        except:
+            pass
+
+
+
+def _slice_with_action_model(model, action_model):
+    for layer in model.base_model.decoder.layers:
+        weight = layer.fc1.weight.data  # (3072, 768)
+        state = Variable(cp(weight))
+        
+        # print (weight)
+
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            with torch.no_grad():
+                o = action_model(state)  # (3072, )
+                y = Bernoulli(o).sample()
+                #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
+                row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+
+        # slice the intermediate and output weight matrices appropriately
+        layer.fc1.out_features = len(row_indices)
+        layer.fc1.weight.data = (
+            layer.fc1.weight[row_indices, :]
+        )
+
+        try:
+            layer.fc1.lora_B.default.weight.data = (
+                layer.fc1.lora_B.default.weight[row_indices, :]
+            )
+        except:
+            pass
+
+        layer.fc1.bias.data = layer.fc1.bias[
+            row_indices
+        ]
+
+        # revert changes on output layer
+        layer.fc2.in_features = len(row_indices)
+        layer.fc2.weight.data = layer.fc2.weight[
+            :, row_indices
+        ]
+
+        try:
+            layer.fc2.lora_A.default.weight.data = (
+                layer.fc2.lora_A.default.weight[:, row_indices]
+            )
+        except:
+            pass
+
 def eval_main(args: argparse.Namespace) -> None:
     logging.info("Running SliceGPT LM eval experiment.")
 
@@ -462,64 +546,31 @@ def eval_main(args: argparse.Namespace) -> None:
     model = cp(model_adapter.model)
 
     if args.use_slicing:
+        # either use uniform slicing or slicing with action model
+        assert args.slice_with_action_model or args.slice_uniform
+
         orig_parameters = sum(p.numel() for p in model.parameters())
 
-        try:
-            action_model = SparsityPredictor(
-                model.config.hidden_size, model.config.intermediate_size, args.sparsity
-            )
-        except:
-            action_model = SparsityPredictor(
-                model.config.hidden_size, model.config.ffn_dim, args.sparsity
-            )
-        
-        action_model.to(config.device)
-        
-        action_model.load_state_dict(torch.load("action_model.ckpt"))
-        action_model.eval()
-
-        for layer in model.base_model.decoder.layers:
-            weight = layer.fc1.weight.data  # (3072, 768)
-            state = Variable(cp(weight))
+        if args.slice_with_action_model:
+            try:
+                action_model = SparsityPredictor(
+                    model.config.hidden_size, model.config.intermediate_size, args.sparsity
+                )
+            except:
+                action_model = SparsityPredictor(
+                    model.config.hidden_size, model.config.ffn_dim, args.sparsity
+                )
             
-            # print (weight)
+            action_model.to(config.device)
+            
+            action_model.load_state_dict(torch.load("action_model.ckpt"))
+            action_model.eval()
 
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                with torch.no_grad():
-                    o = action_model(state)  # (3072, )
-                    y = Bernoulli(o).sample()
-                    #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                    row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
-
-            # slice the intermediate and output weight matrices appropriately
-            layer.fc1.out_features = len(row_indices)
-            layer.fc1.weight.data = (
-                layer.fc1.weight[row_indices, :]
-            )
-
-            try:
-                layer.fc1.lora_B.default.weight.data = (
-                    layer.fc1.lora_B.default.weight[row_indices, :]
-                )
-            except:
-                pass
-
-            layer.fc1.bias.data = layer.fc1.bias[
-                row_indices
-            ]
-
-            # revert changes on output layer
-            layer.fc2.in_features = len(row_indices)
-            layer.fc2.weight.data = layer.fc2.weight[
-                :, row_indices
-            ]
-
-            try:
-                layer.fc2.lora_A.default.weight.data = (
-                    layer.fc2.lora_A.default.weight[:, row_indices]
-                )
-            except:
-                pass
+            # do the slicing
+            _slice_with_action_model(model, action_model)
+        else:
+            # must be slicing uniformly
+            _slice_uniformly(model, args)
 
         new_parameters = sum(p.numel() for p in model.parameters())
         print ("Sparsity achieved {}%".format(int(100*(1-new_parameters/orig_parameters))))
@@ -542,6 +593,7 @@ def eval_main(args: argparse.Namespace) -> None:
                 f"Please specify the metric to use for {task} in TASK_METRIC_MAP. Available info {TASK_METRIC_MAP}"
             )
 
+    # results is a dict with keys: results, configs, versions, n-shot, samples, config, git_hash
     results = lm_eval.simple_evaluate(hflm, tasks=task_names, num_fewshot=args.num_fewshot, batch_size=args.batch_size)[
         'results'
     ]
@@ -549,14 +601,33 @@ def eval_main(args: argparse.Namespace) -> None:
     logging.info(results)
     wandb.log(results)
 
-    with open(f"{args.save_dir}/full_results_{args.num_fewshot}_shot.json", "w") as f:
-        json.dump(results, f)
+    # name the output file
+    outfile = f"{args.save_dir}/full_results_{args.num_fewshot}_shot"
+    if args.use_slicing:
+        if args.slice_with_action_model:
+            outfile += "_actionModelSlicing"
+        else:
+            outfile += "_uniformSlicing"
+    outfile += ".json"
+
+    with open(outfile, "w") as f:
+        json.dump(results, f, indent=4)
 
     metric_vals = {task: round(result.get(TASK_METRIC_MAP[task]), 4) for task, result in results.items()}
     acc_avg = calculate_avg_accuracy(task_names, results)
     metric_vals['average'] = round(acc_avg, 4)
-    with open(f"{args.save_dir}/{args.num_fewshot}_shot_task_results.json", "w") as f:
-        json.dump(metric_vals, f)
+
+    # save this in the task results output file
+    task_outfile = f"{args.save_dir}/{args.num_fewshot}_shot_task_results"
+    if args.use_slicing:
+        if args.slice_with_action_model:
+            task_outfile += "_actionModelSlicing"
+        else:
+            task_outfile += "_uniformSlicing"
+    task_outfile += ".json"
+
+    with open(task_outfile, "w") as f:
+        json.dump(metric_vals, f, indent=4)
 
     wandb.log({'acc_avg': acc_avg})
 
