@@ -21,7 +21,7 @@ for model in facebook/opt-125m facebook/opt-1.3b facebook/opt-2.7b facebook/opt-
 do
 for sparsity_level in 0.1 0.2 0.3 0.4 0.5
 do
-for sparsity_technique in random #bernoulli
+for sparsity_technique in random
 do
 
 #TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=1  python run_lm_eval.py  \
