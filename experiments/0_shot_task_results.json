@@ -1,1 +1,1 @@
-{"arc_challenge": 0.2474, "arc_easy": 0.3721, "hellaswag": 0.312, "piqa": 0.6132, "winogrande": 0.513, "average": 0.4115}
+{"arc_challenge": 0.2619, "arc_easy": 0.3927, "hellaswag": 0.3831, "mmlu_abstract_algebra": 0.25, "mmlu_business_ethics": 0.2, "mmlu_college_computer_science": 0.22, "mmlu_college_mathematics": 0.19, "mmlu_conceptual_physics": 0.2298, "mmlu_formal_logic": 0.2143, "mmlu_global_facts": 0.36, "mmlu_machine_learning": 0.2411, "mmlu_miscellaneous": 0.2784, "mmlu_philosophy": 0.1929, "piqa": 0.6001, "winogrande": 0.5043, "average": 0.398}

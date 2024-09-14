@@ -40,92 +40,22 @@ from torch.nn.utils.parametrizations import orthogonal
 
 from copy import deepcopy as cp
 
-class SparsityPredictor(torch.nn.Module):
-    def __init__(
-        self, hidden_size=768, intermediate_size=3072, sparsity_level=0.2
-    ):
-        super(SparsityPredictor, self).__init__()
+from trainable_activation_sparsity import SparsityPredictor,\
+    slicing, get_optimizer_and_scheduler, finetune, set_seed, CustomTrainer, random_slicing
+    
+from bernoulligpt_utils import LeakyGeLU, LeakySiLU
 
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        # self.proj_hidden = orthogonal(nn.Linear(hidden_size, hidden_size))  # (768, 768)
-        #self.proj_intermediate = orthogonal(
-        #    nn.Linear(hidden_size, intermediate_size)
-        #)  # (3072, 768)
-        self.proj_intermediate = nn.Linear(hidden_size, intermediate_size, bias=False)
+def get_all_layers(model_name, model):
+    if 'opt' in model_name:
+        all_layers = model.base_model.decoder.layers
+    elif 'llama' in model_name:
+        all_layers = model.base_model.layers
+    elif 'falcon' in model_name:
+        all_layers = model.base_model.transformer.h
+    else:
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
 
-        #self.proj_intermediate2 = nn.Linear(intermediate_size, intermediate_size)  # (3072, 768)
-
-        self.row_sparsities = nn.Parameter(
-            torch.rand(intermediate_size, 1), requires_grad=True
-        )  # (3072, 1)
-        self.row_sparsities_bias = nn.Parameter(
-            torch.rand(1, 1), requires_grad=True
-        )  # (3072, 1)
-        # self.col_sparsities = nn.Parameter(torch.rand(hidden_size, 1), requires_grad=True)  # (768, 1)
-        self.sparsity_level = sparsity_level
-        self.density_level = 1-sparsity_level
-
-        self.singular_value = None
-        #for param in self.proj_intermediate.parameters():
-        #    param.requires_grad = False
-
-    def calculate_KLD(self):
-        return (
-            -1 * torch.log(self.alpha) * (1 - self.alpha)
-            - self.alpha * torch.log(1 - self.alpha)
-            + (torch.tensor(self.density_level) * torch.log(torch.tensor(self.sparsity_level))).to(self.alpha.device)
-            + (torch.tensor(self.sparsity_level) * torch.log(torch.tensor(self.density_level))).to(self.alpha.device)
-        ).sum()
-
-    def calculate_l1_loss(self):
-        return torch.sum(torch.abs(self.keep_probs - self.density_level))
-        #return torch.abs((self.keep_probs > 0.5).sum()/self.keep_probs.shape[0] - self.density_level)
-
-    def calculate_total_loss(self):
-        return self.calculate_KLD()
-
-    def forward(self, weight_matrix):
-        # if weight_matrix.shape[0] == self.hidden_size:
-        #     proj_ = self.proj_hidden(weight_matrix.T)
-        #     alpha = nn.Sigmoid()(proj_ @ self.col_sparsities)[:,0]
-        #print (weight_matrix)
-        #print (self.proj_intermediate.weight.data)
-
-        if weight_matrix.shape[0] == self.intermediate_size:  # (3072, 768)
-            proj_ = self.proj_intermediate(weight_matrix)  # (3072, 3072)
-            #_, s, _ = torch.svd(cp(self.proj_intermediate.weight.data).to(torch.float32))
-            #self.singular_value = s
-            #proj_ = proj_/s.max()
-            #proj_ = nn.ReLU()(proj_)
-            #proj_ = self.proj_intermediate2(proj_)
-            alpha = nn.Sigmoid()(proj_ @ self.row_sparsities + self.row_sparsities_bias)[:, 0]  # (3072, )
-        else:
-            raise ValueError("The layer does not support sparsity operation")
-
-        self.alpha = alpha
-
-        m = Uniform(torch.tensor([0.0]), torch.tensor([1.0]))
-        eps = m.sample((alpha.shape[0],)).to(weight_matrix.device)[
-            :, 0
-        ]  # (3072, )
-
-        # Calculate the probabilities using reparametrization trick
-        keep_probs = nn.Sigmoid()(
-            torch.log(eps)
-            - torch.log(1 - eps)
-            + torch.log(alpha)
-            - torch.log(1 - alpha)
-        )
-
-        keep_probs = torch.clip(keep_probs, max=self.density_level)
-
-        self.keep_probs = keep_probs
-
-        # Use the keep_probs as a mask to determine which rows to keep
-        # rows_to_keep = keep_probs <= 0.5
-
-        return keep_probs
+    return all_layers
 
 TASK_METRIC_MAP = {
     "mmlu_abstract_algebra": "acc,none",
@@ -145,32 +75,6 @@ TASK_METRIC_MAP = {
     "winogrande": "acc,none",
 }
 
-def get_optimizer_and_scheduler(model, train_dataset, config):
-    optimizer = torch.optim.AdamW(
-        params=model.parameters(),
-        lr=config.learning_rate,
-        betas=(config.adam_beta1, config.adam_beta2),
-        eps=config.adam_epsilon,
-        weight_decay=config.weight_decay,
-    )
-
-    kwargs_lr_scheduler = {
-        "optimizer": optimizer,
-        "num_warmup_steps": config.num_warmup_steps,
-        "num_training_steps": (
-            (len(train_dataset) - 1) // (config.finetune_train_batch_size * config.gradient_accumulation_steps) + 1
-        )
-        * config.epochs,
-    }
-    if config.lr_scheduler_type in ("cosine", "cosine_with_warmup"):
-        lr_scheduler = transformers.get_cosine_schedule_with_warmup(**kwargs_lr_scheduler)
-    elif config.lr_scheduler_type in ("linear", "linear_with_warmup"):
-        lr_scheduler = transformers.get_linear_schedule_with_warmup(**kwargs_lr_scheduler)
-    else:
-        raise NotImplementedError
-
-    return optimizer, lr_scheduler
-    
 def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
     initialize_tasks()
     parser = argparse.ArgumentParser()
@@ -188,6 +92,12 @@ def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
         help="Path to load the model and tokenizer from (required for local models, not required for HF models)",
     )
     path_group.add_argument(
+        "--model-save-path",
+        type=str,
+        help="The path to load the sparsity action model.",
+        default='../models/'
+    )
+    path_group.add_argument(
         "--sliced-model-path",
         type=str,
         help="Path to load the model to fine-tune (sliced) and tokenizer from",
@@ -196,6 +106,13 @@ def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
     parser.add_argument(
         "--sparsity", type=float, default=0.0, help="A measure of how much slicing is applied (in the range [0, 1))"
     )
+    path_group.add_argument(
+        "--activation",
+        type=str,
+        help="Default activation or new activation like LeakySiLU, LeakyGeLU",
+        default=''
+    )
+
     parser.add_argument(
         "--round-interval",
         type=int,
@@ -211,9 +128,15 @@ def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
     )
 
     parser.add_argument('--use-slicing', action="store_true", help="Use slicing.")
+    parser.add_argument(
+        "--sparsity_technique",
+        dest="sparsity_technique",
+        default='bernoulligpt',
+        help="Type of sparsity injection - bernoulli or random",
+    )
     parser.add_argument('--finetune', action="store_true", help="Fine tune model.")
 
-    parser.add_argument('--wandb-project', type=str, default="slicegpt-lm-eval", help="wandb project name.")
+    parser.add_argument('--wandb-project', type=str, default="bernoulligpt-lm-eval", help="wandb project name.")
     parser.add_argument('--no-wandb', action="store_true", help="Disable wandb.")
     parser.add_argument(
         '--tasks',
@@ -321,107 +244,21 @@ def calculate_avg_accuracy(task_names: str, results: dict) -> float:
         if 'mmlu' in task
     )
     acc_mmlu_avg = acc_mmlu / sum(questions_per_mmlu_task.values())
-    wandb.log({'acc_mmlu_avg': acc_mmlu_avg})
+    if args.no_wandb == False:
+        wandb.log({'acc_mmlu_avg': acc_mmlu_avg})
 
     return (acc_cumul + acc_mmlu_avg) / (n_tasks - len(questions_per_mmlu_task) + 1)
-
-class CustomTrainer(Trainer):
-    def __init__(self, *args, train_loader=None, test_loader=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=self.model.config.pad_token_id)
-        self.train_loader = train_loader
-        self.test_loader = test_loader
-
-    def get_train_dataloader(self) -> DataLoader:
-        return self.train_loader
-
-    def get_eval_dataloader(self, _) -> DataLoader:
-        return self.test_loader
-
-def set_seed(seed):
-    torch.manual_seed(seed)
-    random.seed(seed)
-
-def finetune(model, skip_lora=False):
-    # get the dataset for finetuning
-    _, tokenizer = hf_utils.get_model_and_tokenizer(args.model)
-    finetune_ds = data_utils.get_dataset(args.finetune_dataset)
-    finetune_train_loader = data_utils.prepare_dataloader(
-        dataset=finetune_ds["train"],
-        tokenizer=tokenizer,
-        max_seqlen=args.finetune_train_seqlen,
-        batch_size=args.finetune_train_batch_size,
-        nsamples=args.finetune_train_nsamples,
-        varied_seqlen=args.varied_seqlen,
-        seed=args.seed,
-    )
-    finetune_test_loader = data_utils.prepare_dataloader(
-        dataset=finetune_ds["test"],
-        tokenizer=tokenizer,
-        max_seqlen=args.finetune_test_seqlen,
-        batch_size=args.finetune_test_batch_size,
-        nsamples=args.finetune_test_nsamples,
-        varied_seqlen=args.varied_seqlen,
-        seed=args.seed,
-    )
-
-    if skip_lora == False:
-        lora_config = LoraConfig(
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            task_type=TaskType.CAUSAL_LM,
-            target_modules=lora_target_map(args.model)[args.lora_target_option],
-        )
-
-        lora_model = get_peft_model(model, lora_config)
-    else:
-        lora_model = model
-
-    if args.finetune:
-        lora_model.print_trainable_parameters()
-        # create optimizer and scheduler
-        optimizer, lr_scheduler = get_optimizer_and_scheduler(lora_model, finetune_ds["train"], args)
-
-        training_args = TrainingArguments(
-            output_dir=args.st_checkpoint_dir,  # output directory
-            num_train_epochs=args.epochs,
-            per_device_train_batch_size=args.finetune_train_batch_size,  # batch size per device during training
-            per_device_eval_batch_size=args.finetune_test_batch_size,  # batch size for evaluation
-            logging_steps=args.logging_steps,
-            save_steps=args.save_steps,
-            save_total_limit=args.save_total_limit,
-            disable_tqdm=False,
-            load_best_model_at_end=True,
-            eval_steps=args.eval_steps,
-            evaluation_strategy=args.evaluation_strategy,
-            report_to='tensorboard',
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,  # lower eval_loss is better,
-            gradient_checkpointing=True,
-        )
-
-        trainer = CustomTrainer(
-            model=lora_model,
-            tokenizer=tokenizer,
-            train_loader=finetune_train_loader,
-            test_loader=finetune_test_loader,
-            args=training_args,
-            optimizers=(optimizer, lr_scheduler),
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)],
-        )
-
-        # required to enable gradient_checkpointing
-        lora_model.enable_input_require_grads()
-
-        lora_model.train()
-        trainer.train()
-
-    return lora_model
 
 def eval_main(args: argparse.Namespace) -> None:
     logging.info("Running SliceGPT LM eval experiment.")
 
+    if args.activation.lower() == 'leakysilu':
+        act_fn = LeakySiLU()
+    elif args.activation.lower() == 'leakygelu':
+        act_fn = LeakyGeLU()
+    elif args.activation.lower() == 'relu':
+        act_fn = nn.ReLU()
+        
     logging.info(f"PyTorch device: {config.device}")
     logging.info(f"Number of available cuda devices: {torch.cuda.device_count()}")
 
@@ -462,70 +299,75 @@ def eval_main(args: argparse.Namespace) -> None:
     model = cp(model_adapter.model)
 
     if args.use_slicing:
-        orig_parameters = sum(p.numel() for p in model.parameters())
-
-        try:
-            action_model = SparsityPredictor(
-                model.config.hidden_size, model.config.intermediate_size, args.sparsity
-            )
-        except:
-            action_model = SparsityPredictor(
-                model.config.hidden_size, model.config.ffn_dim, args.sparsity
-            )
-        
-        action_model.to(config.device)
-        
-        action_model.load_state_dict(torch.load("action_model.ckpt"))
-        action_model.eval()
-
-        for layer in model.base_model.decoder.layers:
-            weight = layer.fc1.weight.data  # (3072, 768)
-            state = Variable(cp(weight))
+        if args.sparsity_technique != 'random':
+            if 'opt' in args.model:
+                action_model = SparsityPredictor(
+                    model.config.hidden_size, model.config.ffn_dim, args.sparsity
+                )
+            elif 'llama' in args.model:
+                action_model = SparsityPredictor(
+                    model.config.hidden_size, model.config.intermediate_size, args.sparsity
+                )
+            elif 'falcon' in args.model:
+                action_model = SparsityPredictor(
+                    model.config.hidden_size, model.config.ffn_hidden_size, args.sparsity
+                )
+            else:
+                raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
             
-            # print (weight)
+            model_checkpoint_save_path = os.path.join(args.model_save_path, \
+            "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], args.finetune, args.sparsity))
+        
+            action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
+            action_model.eval()
 
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                with torch.no_grad():
-                    o = action_model(state)  # (3072, )
-                    y = Bernoulli(o).sample()
-                    #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                    row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+            orig_parameters = sum(p.numel() for p in model.parameters())
 
-            # slice the intermediate and output weight matrices appropriately
-            layer.fc1.out_features = len(row_indices)
-            layer.fc1.weight.data = (
-                layer.fc1.weight[row_indices, :]
-            )
+            for layer in get_all_layers(args.model, model):
+                if 'opt' in args.model:
+                    weight = layer.fc1.weight.data  # (3072, 768)
+                elif 'llama' in args.model:
+                    weight = layer.mlp.gate_proj.weight.data
+                elif 'falcon' in args.model:
+                    weight = layer.mlp.dense_h_to_4h.weight.data
+                else:
+                    ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
-            try:
-                layer.fc1.lora_B.default.weight.data = (
-                    layer.fc1.lora_B.default.weight[row_indices, :]
-                )
-            except:
-                pass
+                state = Variable(cp(weight))
+                
+                # print (weight)
 
-            layer.fc1.bias.data = layer.fc1.bias[
-                row_indices
-            ]
+                with torch.autocast(device_type=device, dtype=torch.float16):
+                    with torch.no_grad():
+                        o = action_model(state)  # (3072, )
+                        y = Bernoulli(o).sample()
+                        #y = (o > args.sparsity).long().to(o.device)  # (3072, )
+                        row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
 
-            # revert changes on output layer
-            layer.fc2.in_features = len(row_indices)
-            layer.fc2.weight.data = layer.fc2.weight[
-                :, row_indices
-            ]
+                slicing(args.model, layer, row_indices)
+        else:
+            orig_parameters = sum(p.numel() for p in model.parameters())
 
-            try:
-                layer.fc2.lora_A.default.weight.data = (
-                    layer.fc2.lora_A.default.weight[:, row_indices]
-                )
-            except:
-                pass
+            for layer in get_all_layers(args.model, model):
+                random_slicing(args.model, layer, args.sparsity)
 
         new_parameters = sum(p.numel() for p in model.parameters())
         print ("Sparsity achieved {}%".format(int(100*(1-new_parameters/orig_parameters))))
 
+    if args.activation != '':
+        for layer in get_all_layers(args.model, model):
+            if 'opt' in args.model:
+                layer.activation_fn = act_fn  # (3072, 768)
+            elif 'llama' in args.model:
+                layer.mlp.act_fn = act_fn
+            elif 'falcon' in args.model:
+                layer.mlp.act_fn = act_fn
+            else:
+                ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+
     if args.finetune:
-        model = finetune(model)
+        model = finetune(args, model, tokenizer)
 
     hflm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
 
@@ -547,7 +389,6 @@ def eval_main(args: argparse.Namespace) -> None:
     ]
 
     logging.info(results)
-    wandb.log(results)
 
     with open(f"{args.save_dir}/full_results_{args.num_fewshot}_shot.json", "w") as f:
         json.dump(results, f)
@@ -558,7 +399,11 @@ def eval_main(args: argparse.Namespace) -> None:
     with open(f"{args.save_dir}/{args.num_fewshot}_shot_task_results.json", "w") as f:
         json.dump(metric_vals, f)
 
-    wandb.log({'acc_avg': acc_avg})
+    if args.no_wandb == False:
+        wandb.log(metric_vals)
+
+    if args.no_wandb == False:
+        wandb.log({'acc_avg': acc_avg})
 
     logging.info(json.dumps(metric_vals, indent=4))
     logging.info(f"Average accuracy across tasks: {acc_avg}")
@@ -573,4 +418,5 @@ if __name__ == "__main__":
 
     args = eval_arg_parser()
     process_eval_args(args)
+    args.model_name = args.model
     eval_main(args)

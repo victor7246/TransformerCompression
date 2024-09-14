@@ -1,5 +1,5 @@
 import logging
-
+import os
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,9 @@ import torch
 from tqdm import tqdm
 from copy import deepcopy as cp
 import numpy as np
+from scipy import stats
 
+import wandb
 import transformers
 from transformers import (
     AutoModelForSequenceClassification,
@@ -35,6 +37,8 @@ from bo_options import lora_target_map
 from slicegpt import data_utils, gpu_utils, hf_utils, utils
 from slicegpt.config import config
 
+from bernoulligpt_utils import LeakyGeLU, LeakySiLU
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -43,6 +47,147 @@ from torch.distributions.uniform import Uniform
 from torch.distributions import Categorical, Bernoulli
 from torch.nn.utils.parametrizations import orthogonal
 
+import ddks
+
+calculation = ddks.methods.ddKS()
+
+def random_slicing(model_name, layer, sparsity):
+    if 'opt' in model_name:
+        feat_len = layer.fc1.out_features
+    elif 'llama' in model_name:
+        feat_len = layer.mlp.gate_proj.out_features
+    elif 'falcon' in model_name:
+        feat_len = layer.mlp.dense_h_to_4h.out_features
+    else:
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+    row_indices = random.sample(range(feat_len), int((1 - sparsity)*feat_len))
+
+    slicing(model_name, layer, row_indices)
+
+def slicing(model_name, layer, row_indices):
+    if 'opt' in model_name:
+        # slice the intermediate and output weight matrices appropriately
+        layer.fc1.out_features = len(row_indices)
+        layer.fc1.weight.data = (
+            layer.fc1.weight[row_indices, :]
+        )
+
+        try:
+            layer.fc1.lora_B.default.weight.data = (
+                layer.fc1.lora_B.default.weight[row_indices, :]
+            )
+        except:
+            pass
+
+        layer.fc1.bias.data = layer.fc1.bias[
+            row_indices
+        ]
+
+        # revert changes on output layer
+        layer.fc2.in_features = len(row_indices)
+        layer.fc2.weight.data = layer.fc2.weight[
+            :, row_indices
+        ]
+
+        try:
+            layer.fc2.lora_A.default.weight.data = (
+                layer.fc2.lora_A.default.weight[:, row_indices]
+            )
+        except:
+            pass 
+    
+    elif 'llama' in model_name:
+        # slice the intermediate and output weight matrices appropriately
+        layer.mlp.gate_proj.out_features = len(row_indices)
+        layer.mlp.gate_proj.weight.data = (
+            layer.mlp.gate_proj.weight[row_indices, :]
+        )
+
+        try:
+            layer.mlp.gate_proj.lora_B.default.weight.data = (
+                layer.mlp.gate_proj.lora_B.default.weight[row_indices, :]
+            )
+        except:
+            pass
+
+        layer.mlp.up_proj.out_features = len(row_indices)
+        layer.mlp.up_proj.weight.data = (
+            layer.mlp.up_proj.weight[row_indices, :]
+        )
+
+        try:
+            layer.mlp.up_proj.lora_B.default.weight.data = (
+                layer.mlp.up_proj.lora_B.default.weight[row_indices, :]
+            )
+        except:
+            pass
+
+        # revert changes on output layer
+        layer.mlp.down_proj.in_features = len(row_indices)
+        layer.mlp.down_proj.weight.data = layer.mlp.down_proj.weight[
+            :, row_indices
+        ]
+
+        try:
+            layer.mlp.down_proj.lora_A.default.weight.data = (
+                layer.mlp.down_proj.lora_A.default.weight[:, row_indices]
+            )
+        except:
+            pass 
+
+    elif 'falcon' in model_name:
+        # slice the intermediate and output weight matrices appropriately
+        layer.mlp.dense_h_to_4h.out_features = len(row_indices)
+        layer.mlp.dense_h_to_4h.weight.data = (
+            layer.mlp.dense_h_to_4h.weight[row_indices, :]
+        )
+
+        try:
+            layer.mlp.dense_h_to_4h.lora_B.default.weight.data = (
+                layer.mlp.dense_h_to_4h.lora_B.default.weight[row_indices, :]
+            )
+        except:
+            pass
+
+        # revert changes on output layer
+        layer.mlp.dense_4h_to_h.in_features = len(row_indices)
+        layer.mlp.dense_4h_to_h.weight.data = layer.mlp.dense_4h_to_h.weight[
+            :, row_indices
+        ]
+
+        try:
+            layer.mlp.dense_4h_to_h.lora_A.default.weight.data = (
+                layer.mlp.dense_4h_to_h.lora_A.default.weight[:, row_indices]
+            )
+        except:
+            pass 
+
+    return layer
+
+def get_all_layers(model_name, model):
+    if 'opt' in model_name:
+        all_layers = model.base_model.model.model.decoder.layers
+    elif 'llama' in model_name:
+        all_layers = model.base_model.model.model.layers
+    elif 'falcon' in model_name:
+        all_layers = model.base_model.model.transformer.h
+    else:
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+
+    return all_layers
+
+def get_all_layers_before_lora(model_name, model):
+    if 'opt' in model_name:
+        all_layers = model.model.decoder.layers
+    elif 'llama' in model_name:
+        all_layers = model.model.layers
+    elif 'falcon' in model_name:
+        all_layers = model.model.transformer.h
+    else:
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+
+    return all_layers
 
 class SparsityPredictor(torch.nn.Module):
     def __init__(
@@ -84,18 +229,11 @@ class SparsityPredictor(torch.nn.Module):
 
     def calculate_l1_loss(self):
         return torch.sum(torch.abs(self.keep_probs - self.density_level))
-        #return torch.abs((self.keep_probs > 0.5).sum()/self.keep_probs.shape[0] - self.density_level)
 
     def calculate_total_loss(self):
         return self.calculate_KLD()
 
     def forward(self, weight_matrix):
-        # if weight_matrix.shape[0] == self.hidden_size:
-        #     proj_ = self.proj_hidden(weight_matrix.T)
-        #     alpha = nn.Sigmoid()(proj_ @ self.col_sparsities)[:,0]
-        #print (weight_matrix)
-        #print (self.proj_intermediate.weight.data)
-
         if weight_matrix.shape[0] == self.intermediate_size:  # (3072, 768)
             proj_ = self.proj_intermediate(weight_matrix)  # (3072, 3072)
             #_, s, _ = torch.svd(cp(self.proj_intermediate.weight.data).to(torch.float32))
@@ -122,7 +260,8 @@ class SparsityPredictor(torch.nn.Module):
             - torch.log(1 - alpha)
         )
 
-        keep_probs = torch.clip(keep_probs, max=self.density_level)
+        keep_probs = keep_probs * self.density_level
+        #keep_probs = torch.clip(keep_probs, max=self.density_level)
 
         self.keep_probs = keep_probs
 
@@ -131,39 +270,31 @@ class SparsityPredictor(torch.nn.Module):
 
         return keep_probs
 
-
-def calculate_activation_reward_bkp(weight_matrix):
-    if weight_matrix.dtype == torch.float16:
-        weight_matrix = weight_matrix.to(torch.float32)
-
-    u,s,v = torch.svd(weight_matrix)
-    x = torch.abs(s.max()-1)
-    #x = torch.abs(s.max())
-    x += 0.0001
-    #print ("Reward")
-    #print (weight_matrix, 1/x)
-    return 1/x
-
-def calculate_activation_reward(weight_matrix):
-    if weight_matrix.dtype == torch.float16:
-        weight_matrix = weight_matrix.to(torch.float32)
-
-    u,s,v = torch.svd(weight_matrix)
+def calculate_activation_reward(weight_matrix1, weight_matrix2):
+    if weight_matrix1.dtype == torch.float16:
+        weight_matrix1 = weight_matrix1.to(torch.float32)
     
-    #x = torch.abs(s.max()-1)
-    #x = torch.abs(s.max())
-    #x += 0.0001
-    #print ("Reward")
-    #print (weight_matrix, 1/x)
-    #return 1/x
-    return s.mean()
+    if weight_matrix2.dtype == torch.float16:
+        weight_matrix2 = weight_matrix2.to(torch.float32)
 
-def discount_rewards(rewards, gamma=0.99):
+    _,s1,_ = torch.svd(weight_matrix1)
+    _,s2,_ = torch.svd(weight_matrix2)
+    
+    #dist = calculation(s1.unsqueeze(1),s2.unsqueeze(1))
+    dist = stats.ks_2samp(s1.detach().cpu().numpy(), s2.detach().cpu().numpy()).statistic
+
+    if dist == 0:
+        return 99999
+    else:
+        return 1/dist
+
+def discount_rewards(rewards, gamma=1):
     r = np.array([gamma**i * rewards[i] for i in range(len(rewards))])
     # Reverse the array direction for cumsum and then
     # revert back to the original order
-    r = r[::-1].cumsum()[::-1]
-    return r - r.mean()
+    #r = r[::-1].cumsum()[::-1]
+    #return r - r.mean()
+    return r
 
 def get_optimizer_and_scheduler(model, train_dataset, config):
     optimizer = torch.optim.AdamW(
@@ -191,7 +322,6 @@ def get_optimizer_and_scheduler(model, train_dataset, config):
 
     return optimizer, lr_scheduler
 
-
 class CustomTrainer(Trainer):
     def __init__(self, *args, train_loader=None, test_loader=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -209,7 +339,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
 
-def finetune(model, skip_lora=False):
+def finetune(args, model, tokenizer, skip_lora=False):
     # get the dataset for finetuning
     finetune_ds = data_utils.get_dataset(args.finetune_dataset)
     finetune_train_loader = data_utils.prepare_dataloader(
@@ -316,6 +446,13 @@ def _get_parse_args():
         help="The path containing the model checkpoint.",
     )
     parser.add_argument(
+        "--model_save_path",
+        dest="model_save_path",
+        default="",
+        help="The path to save the sparsity action model.",
+    )
+
+    parser.add_argument(
         "--num_episodes",
         dest="num_episodes",
         default=20,
@@ -329,6 +466,19 @@ def _get_parse_args():
         help="Sparsity level of the model.",
     )
 
+    parser.add_argument(
+        "--sparsity_technique",
+        dest="sparsity_technique",
+        default='bernoulligpt',
+        help="Type of sparsity injection - bernoulli or random",
+    )
+
+    parser.add_argument(
+        "--activation",
+        type=str,
+        help="Default activation or new activation like LeakySiLU, LeakyGeLU",
+        default=''
+    )
     parser.add_argument(
         "--learning-rate-action",
         dest="learning_rate_action",
@@ -404,10 +554,10 @@ def _get_parse_args():
 
     parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--evaluation-strategy', type=str, default="steps")
-    parser.add_argument('--eval-steps', type=int, default=16)
-    parser.add_argument('--save-steps', type=int, default=16)
+    parser.add_argument('--eval-steps', type=int, default=100)
+    parser.add_argument('--save-steps', type=int, default=100)
     parser.add_argument('--save-total-limit', type=int, default=1)
-    parser.add_argument('--logging-steps', type=int, default=1)
+    parser.add_argument('--logging-steps', type=int, default=100)
 
     parser.add_argument('--lora-alpha', type=float, default=32.0)
     parser.add_argument('--lora-dropout', type=float, default=0.1)
@@ -415,7 +565,7 @@ def _get_parse_args():
     parser.add_argument('--lora-bias', type=str, default="none")
 
     parser.add_argument(
-        '--st_checkpoint_dir', type=str, default=".", help="Path for syne-tune to save finetuning checkpoints."
+        '--st_checkpoint_dir', type=str, default="../models/", help="Path for syne-tune to save finetuning checkpoints."
     )
     parser.add_argument(
         '--lora-target-option',
@@ -427,6 +577,17 @@ def _get_parse_args():
     parser.add_argument('--no-wandb', action="store_true", help="Disable wandb.")
 
     args = parser.parse_args()
+
+    if args.no_wandb == False:
+        config = vars(args)
+        wandb.login()
+        wandb.init(project=args.wandb_project,config=config)
+
+    try:
+        os.makedirs(args.model_save_path)
+    except:
+        pass
+
     return args
 
 
@@ -439,6 +600,16 @@ if __name__ == "__main__":
 
     logger.setLevel(getattr(logging, args.loglevel.upper()))
     logger.debug(f"args: {args}")
+
+    model_checkpoint_save_path = os.path.join(args.model_save_path, \
+        "model={}_finetune={}_sparsity={}.ckpt".format(args.model_name.split("/")[-1], args.finetune, args.sparsity_level))
+    
+    if args.activation.lower() == 'leakysilu':
+        act_fn = LeakySiLU()
+    elif args.activation.lower() == 'leakygelu':
+        act_fn = LeakyGeLU()
+    elif args.activation.lower() == 'relu':
+        act_fn = nn.ReLU()
 
     # otherwise, continue with the experiments
     # set random seed
@@ -457,11 +628,6 @@ if __name__ == "__main__":
 
     model_adapter, tokenizer = hf_utils.get_model_and_tokenizer(args.model_name)
 
-    #tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-
-    # load the pretrained model with the config
-    #model_orig = AutoModelForCausalLM.from_config(config).to(device)
-
     model_orig = cp(model_adapter.model).to(device)
 
     # get the dataset for perplexity evaluation
@@ -475,243 +641,249 @@ if __name__ == "__main__":
         varied_seqlen=args.varied_seqlen,
         seed=args.seed,
     )
+    
+    if args.activation != '':
+        for layer in get_all_layers_before_lora(args.model_name, model_orig):
+            if 'opt' in args.model_name:
+                layer.activation_fn = act_fn  # (3072, 768)
+            elif 'llama' in args.model_name:
+                layer.mlp.act_fn = act_fn
+            elif 'falcon' in args.model_name:
+                layer.mlp.act_fn = act_fn
+            else:
+                ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
-    model_orig = finetune(model_orig)
+    model_orig = finetune(args, model_orig, tokenizer)
 
     model_orig.eval()
 
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
     dataset_ppl = gpu_utils.evaluate_ppl(model_orig, model_orig.config.pad_token_id, ppl_eval_loader)
+    end.record()
+    torch.cuda.synchronize()
     print(f'PPL before finetuning: {dataset_ppl:.4f}')
+    print(f'Total inference time before: {start.elapsed_time(end):.4f}')
+
+    if args.no_wandb == False:
+        wandb.log({"PPL Before": dataset_ppl})
+        wandb.log({"Inference time before": start.elapsed_time(end)})
     #wandb.log({"pre_finetune_ppl": dataset_ppl})
 
     utils.cleanup_memory()
 
     orig_parameters = sum(p.numel() for p in model_orig.parameters())
-
-    all_rewards = []
-    best_score = 0
-
-    try:
-        action_model = SparsityPredictor(
-            model_orig.config.hidden_size, model_orig.config.intermediate_size, args.sparsity_level
-        )
-    except:
-        action_model = SparsityPredictor(
-            model_orig.config.hidden_size, model_orig.config.ffn_dim, args.sparsity_level
-        )
-
-    #if args.dtype == "fp16":
-    #    action_model = action_model.half()
-
-    action_model.to(device)
-
-    action_model.train()
-
-    print(action_model)
-
-    print(
-        "Total number of parameters",
-        sum(p.numel() for p in action_model.parameters() if p.requires_grad),
-    )
-
-    optimizer = torch.optim.AdamW(
-        action_model.parameters(), lr=args.learning_rate_action
-    )
-
-    best_accuracy = 0
-
-    scaler = torch.cuda.amp.GradScaler()
-
-    for episode in tqdm(range(args.num_episodes)):
-        #optimizer.zero_grad()
-        
-        state_pool = []
-        action_pool = []
-        reward_pool = []
-
-        model = cp(model_orig)
-        #model_name, main_model = list(model.named_modules())[1]
-
-        total_loss = 0
-        count = 0
-        total_reward = 0
-        kld_loss = 0
-
-        for layer in model.base_model.model.model.decoder.layers:
-            weight = layer.fc1.weight.data  # (3072, 768)
-            state = Variable(cp(weight))
-            
-            # print (weight)
-
-            with torch.autocast(device_type=device, dtype=torch.float16):
-                o = action_model(state)  # (3072, )
-                #print (state)
-                #for name, param in action_model.named_parameters():
-                #    print (name)
-                #    print (param)
-
-                y = Bernoulli(o).sample()
-                #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
-
-            # slice the intermediate and output weight matrices appropriately
-            layer.fc1.out_features = len(row_indices)
-            layer.fc1.weight.data = (
-                layer.fc1.weight[row_indices, :]
-            )
-
-            #try:
-            layer.fc1.lora_B.default.weight.data = (
-                layer.fc1.lora_B.default.weight[row_indices, :]
-            )
-            #except:
-            #    pass
-
-            layer.fc1.bias.data = layer.fc1.bias[
-                row_indices
-            ]
-
-            # revert changes on output layer
-            layer.fc2.in_features = len(row_indices)
-            layer.fc2.weight.data = layer.fc2.weight[
-                :, row_indices
-            ]
-
-            #try:
-            layer.fc2.lora_A.default.weight.data = (
-                layer.fc2.lora_A.default.weight[:, row_indices]
-            )
-            #except:
-            #    pass
-
-            # print(layer)      # matrices are indeed being sliced, verified from the output
-
-            # get the updated rewards
-            reward = calculate_activation_reward(layer.fc1.weight.data) #- action_model.calculate_l1_loss()
-
-            state_pool.append(state)
-            action_pool.append(y)
-            reward_pool.append(reward.item())
-
-            total_reward += reward.item()
-            count += 1
-
-            if args.use_kld:
-                kld_loss += action_model.calculate_total_loss()
-
-            #print (reward)
-            
-        reward_pool = discount_rewards(reward_pool)
-        new_parameters = sum(p.numel() for p in model.parameters())
-
-        for i in range(len(state_pool)):
-            with torch.autocast(device_type=device, dtype=torch.float16):
-                state = state_pool[i]
-                action = Variable(action_pool[i])
-                reward = reward_pool[i]
-
-                o = action_model(state)  # (3072, )
-                y = Bernoulli(o)
-
-                loss = -y.log_prob(action).sum() * reward  # Negtive score function x reward
-            
-            #loss.backward()
-            #print (loss)
-
-            if args.use_kld:
-                loss += kld_loss
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-            #torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
-        
-        #optimizer.step()
-        #optimizer.zero_grad()
-
-        #for name, param in action_model.named_parameters():
-        #    print (name, param)
-
-        state_pool = []
-        action_pool = []
-        reward_pool = []
-
-        #model.train()
-        #model = finetune(model, skip_lora=True)
-        model.eval()
-
-        dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
-        print(f'PPL after sparsification: {dataset_ppl2:.4f}')
-        #wandb.log({"post_sparsification_ppl": dataset_ppl2})
-
-        print(
-            "Episode",
-            episode,
-            "Avg reward",
-            total_reward/count,
-            "sparsity",
-            str((1-new_parameters/orig_parameters)*100) + " %",
-            "Change in ppl",
-            dataset_ppl2-dataset_ppl
-        )  
-
-        if total_reward > best_score:
-            best_score =  total_reward
-            torch.save(action_model.state_dict(), "action_model.ckpt")
-            #torch.save(model, "sliced_model.pt")
-
-    ######## inference ############
-    action_model.load_state_dict(torch.load("action_model.ckpt"))
-    action_model.eval()
-
     model = cp(model_orig)
 
-    for layer in model.base_model.model.model.decoder.layers:
-        weight = layer.fc1.weight.data  # (3072, 768)
-        state = Variable(cp(weight))
-        
-        # print (weight)
+    if args.sparsity_level > 0:
+        if args.sparsity_technique != 'random':
+            all_rewards = []
+            best_score = 0
 
-        with torch.autocast(device_type=device, dtype=torch.float16):
-            with torch.no_grad():
-                o = action_model(state)  # (3072, )
-                y = Bernoulli(o).sample()
-                #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+            if 'opt' in args.model_name:
+                action_model = SparsityPredictor(
+                    model_orig.config.hidden_size, model_orig.config.ffn_dim, args.sparsity_level
+                )
+            elif 'llama' in args.model_name:
+                action_model = SparsityPredictor(
+                    model_orig.config.hidden_size, model_orig.config.intermediate_size, args.sparsity_level
+                )
+            elif 'falcon' in args.model_name:
+                action_model = SparsityPredictor(
+                    model_orig.config.hidden_size, model_orig.config.ffn_hidden_size, args.sparsity_level
+                )
+            else:
+                raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+                
 
-        # slice the intermediate and output weight matrices appropriately
-        layer.fc1.out_features = len(row_indices)
-        layer.fc1.weight.data = (
-            layer.fc1.weight[row_indices, :]
-        )
+            #if args.dtype == "fp16":
+            #    action_model = action_model.half()
 
-        #try:
-        layer.fc1.lora_B.default.weight.data = (
-            layer.fc1.lora_B.default.weight[row_indices, :]
-        )
-        #except:
-        #    pass
+            action_model.to(device)
 
-        layer.fc1.bias.data = layer.fc1.bias[
-            row_indices
-        ]
+            action_model.train()
 
-        # revert changes on output layer
-        layer.fc2.in_features = len(row_indices)
-        layer.fc2.weight.data = layer.fc2.weight[
-            :, row_indices
-        ]
+            print(action_model)
 
-        #try:
-        layer.fc2.lora_A.default.weight.data = (
-            layer.fc2.lora_A.default.weight[:, row_indices]
-        )
+            print(
+                "Total number of parameters",
+                sum(p.numel() for p in action_model.parameters() if p.requires_grad),
+            )
+
+            optimizer = torch.optim.AdamW(
+                action_model.parameters(), lr=args.learning_rate_action
+            )
+
+            best_accuracy = 0
+
+            scaler = torch.cuda.amp.GradScaler()
+
+            for episode in tqdm(range(args.num_episodes)):
+                #optimizer.zero_grad()
+                
+                state_pool = []
+                action_pool = []
+                reward_pool = []
+
+                model = cp(model_orig)
+                #model_name, main_model = list(model.named_modules())[1]
+
+                total_loss = 0
+                count = 0
+                total_reward = 0
+                kld_loss = 0
+
+                for i, layer in enumerate(get_all_layers(args.model_name, model)):
+                    if 'opt' in args.model_name:
+                        weight = layer.fc1.weight.data  # (3072, 768)
+                    elif 'llama' in args.model_name:
+                        weight = layer.mlp.gate_proj.weight.data
+                    elif 'falcon' in args.model_name:
+                        weight = layer.mlp.dense_h_to_4h.weight.data
+                    else:
+                        ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+                    state = Variable(cp(weight))
+                    
+                    # print (weight)
+
+                    with torch.autocast(device_type=device, dtype=torch.float16):
+                        o = action_model(state)  # (3072, )
+                        y = Bernoulli(o).sample()
+                        #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
+                        row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+
+                    slicing(args.model_name, layer, row_indices)
+
+                    # get the updated rewards
+                    if 'opt' in args.model_name:
+                        main_w = get_all_layers(args.model_name, model_orig)[i].fc1.weight.data 
+                        new_w = layer.fc1.weight.data 
+                    elif 'llama' in args.model_name:
+                        main_w = get_all_layers(args.model_name, model_orig)[i].mlp.gate_proj.weight.data 
+                        new_w = layer.mlp.gate_proj.weight.data
+                    elif 'falcon' in args.model_name:
+                        main_w = get_all_layers(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data 
+                        new_w = layer.mlp.dense_h_to_4h.weight.data
+                    else:
+                        ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+                    reward = calculate_activation_reward(main_w, new_w) #- action_model.calculate_l1_loss()
+
+                    state_pool.append(state)
+                    action_pool.append(y)
+                    reward_pool.append(reward.item())
+
+                    total_reward += reward.item()
+                    count += 1
+
+                    if args.use_kld:
+                        kld_loss += action_model.calculate_total_loss()
+
+                    #print (reward)
+                    
+                reward_pool = discount_rewards(reward_pool)
+
+                for i in range(len(state_pool)):
+                    with torch.autocast(device_type=device, dtype=torch.float16):
+                        state = state_pool[i]
+                        action = Variable(action_pool[i])
+                        reward = reward_pool[i]
+
+                        o = action_model(state)  # (3072, )
+                        y = Bernoulli(o)
+
+                        loss = -1 * (torch.log(o)*action).mean() * reward  # Negtive score function x reward
+                        #print (reward)
+                        #print (o)
+                        #print (action)
+                        #print (loss)
+
+                        total_loss += loss.item()
+
+                    #loss.backward()
+                    #print (loss)
+
+                    if args.use_kld:
+                        loss += kld_loss
+
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                    #torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
+                
+                print ("Episode ", episode, " loss ", total_loss/count)
+                if args.no_wandb == False:
+                    wandb.log({"Episodic Loss": total_loss/count})
+                    wandb.log({"Episodic Reward": total_reward})
+
+                state_pool = []
+                action_pool = []
+                reward_pool = []
+
+                print(
+                    "Episode",
+                    episode,
+                    "Avg reward",
+                    total_reward/count
+                )  
+
+                if total_reward > best_score:
+                    best_score =  total_reward
+                    torch.save(action_model.state_dict(), model_checkpoint_save_path)
+
+            ######## inference ############
+            action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
+            action_model.eval()
+
+            model = cp(model_orig)
+
+            for layer in get_all_layers(args.model_name, model):
+                if 'opt' in args.model_name:
+                    weight = layer.fc1.weight.data  # (3072, 768)
+                elif 'llama' in args.model_name:
+                    weight = layer.mlp.gate_proj.weight.data
+                elif 'falcon' in args.model_name:
+                    weight = layer.mlp.dense_h_to_4h.weight.data
+                else:
+                    ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+                state = Variable(cp(weight))
+                
+                # print (weight)
+
+                with torch.autocast(device_type=device, dtype=torch.float16):
+                    with torch.no_grad():
+                        o = action_model(state)  # (3072, )
+                        y = Bernoulli(o).sample()
+                        #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
+                        row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+
+                slicing(args.model_name, layer, row_indices)
+        else:
+            for layer in get_all_layers(args.model_name, model):
+                random_slicing(args.model_name, layer, args.sparsity_level)
 
     #model = torch.load("sliced_model.pt")
     model.train()
-    model = finetune(model, skip_lora=True)
+    model = finetune(args, model, tokenizer, skip_lora=True)
+    new_parameters = sum(p.numel() for p in model.parameters())
+
     model.eval()
 
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
     dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
-    print(f'PPL after sparsification: {dataset_ppl2:.4f}')
+    end.record()
+    torch.cuda.synchronize()
+    print(f'PPL after finetuning: {dataset_ppl2:.4f}')
+    print(f'Total inference time after: {start.elapsed_time(end):.4f}')
+    print(f'Sparsity achieved: {int((1-new_parameters/orig_parameters)*100)}%')
+
+    if args.no_wandb == False:
+        wandb.log({"PPL After": dataset_ppl2})
+        wandb.log({"Sparsity Achieved": int((1-new_parameters/orig_parameters)*100)})
+        wandb.log({"Inference time after": start.elapsed_time(end)})

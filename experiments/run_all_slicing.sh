@@ -1,12 +1,20 @@
-TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=1 python trainable_activation_sparsity.py \
+for model in facebook/opt-125m facebook/opt-1.3b facebook/opt-2.7b facebook/opt-6.7b
+do
+for dataset in wikitext2 alpaca
+do
+for sparsity_level in 0.1 0.2 0.3 0.4 0.5
+do
+for sparsity_technique in random bernoulli
+do
+TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py \
     --log DEBUG \
     --use_gpu \
-    --model_name meta-llama/Llama-2-7b-hf  \
+    --model_name ${model}  \
     --num_episodes 20 \
     --learning-rate-action 0.0005 \
-    --sparsity_level 0.2 \
-    --ppl-eval-dataset wikitext2       \
-    --finetune-dataset wikitext2         \
+    --sparsity_level ${sparsity_level} \
+    --ppl-eval-dataset ${dataset}       \
+    --finetune-dataset ${dataset}         \
     --finetune-train-nsamples 8000       \
     --finetune-train-seqlen 1024       \
     --finetune-train-batch-size 3         \
@@ -17,17 +25,18 @@ TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIB
     --eval-steps 16       \
     --save-steps 16 \
     --epochs 1 \
-    --model_save_path "../models/"
+    --model_save_path "../models/" \
+    --sparsity_technique ${sparsity_technique}
 
 TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py \
     --log DEBUG \
     --use_gpu \
-    --model_name facebook/opt-125m  \
+    --model_name ${model}  \
     --num_episodes 20 \
     --learning-rate-action 0.0005 \
-    --sparsity_level 0.2 \
-    --ppl-eval-dataset wikitext2       \
-    --finetune-dataset wikitext2         \
+    --sparsity_level ${sparsity_level} \
+    --ppl-eval-dataset ${dataset}       \
+    --finetune-dataset ${dataset}         \
     --finetune-train-nsamples 8000       \
     --finetune-train-seqlen 1024       \
     --finetune-train-batch-size 3         \
@@ -38,4 +47,10 @@ TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIB
     --eval-steps 16       \
     --save-steps 16 \
     --epochs 1 \
-    --model_save_path "../models/" 
+    --model_save_path "../models/" \
+    --finetune \
+    --sparsity_technique ${sparsity_technique}
+done  
+done
+done
+done

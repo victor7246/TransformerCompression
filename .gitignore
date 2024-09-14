@@ -18,6 +18,8 @@ checkpoint*/
 *.bin
 *.ckpt
 *.pt
+*.json
+nohup.out
 
 # User-specific files
 *.rsuser
