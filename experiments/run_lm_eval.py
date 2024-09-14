@@ -384,20 +384,40 @@ def eval_main(args: argparse.Namespace) -> None:
                 f"Please specify the metric to use for {task} in TASK_METRIC_MAP. Available info {TASK_METRIC_MAP}"
             )
 
+    # results is a dict with keys: results, configs, versions, n-shot, samples, config, git_hash
     results = lm_eval.simple_evaluate(hflm, tasks=task_names, num_fewshot=args.num_fewshot, batch_size=args.batch_size)[
         'results'
     ]
 
     logging.info(results)
 
-    with open(f"{args.save_dir}/full_results_{args.num_fewshot}_shot.json", "w") as f:
-        json.dump(results, f)
+    # name the output file
+    outfile = f"{args.save_dir}/full_results_{args.num_fewshot}_shot"
+    if args.use_slicing:
+        if args.slice_with_action_model:
+            outfile += "_actionModelSlicing"
+        else:
+            outfile += "_uniformSlicing"
+    outfile += ".json"
+
+    with open(outfile, "w") as f:
+        json.dump(results, f, indent=4)
 
     metric_vals = {task: round(result.get(TASK_METRIC_MAP[task]), 4) for task, result in results.items()}
     acc_avg = calculate_avg_accuracy(task_names, results)
     metric_vals['average'] = round(acc_avg, 4)
-    with open(f"{args.save_dir}/{args.num_fewshot}_shot_task_results.json", "w") as f:
-        json.dump(metric_vals, f)
+
+    # save this in the task results output file
+    task_outfile = f"{args.save_dir}/{args.num_fewshot}_shot_task_results"
+    if args.use_slicing:
+        if args.slice_with_action_model:
+            task_outfile += "_actionModelSlicing"
+        else:
+            task_outfile += "_uniformSlicing"
+    task_outfile += ".json"
+
+    with open(task_outfile, "w") as f:
+        json.dump(metric_vals, f, indent=4)
 
     if args.no_wandb == False:
         wandb.log(metric_vals)
