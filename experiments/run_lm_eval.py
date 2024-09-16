@@ -317,7 +317,9 @@ def eval_main(args: argparse.Namespace) -> None:
             
             model_checkpoint_save_path = os.path.join(args.model_save_path, \
             "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], args.finetune, args.sparsity))
-        
+
+            action_model.to(config.device)
+            
             action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
             action_model.eval()
 
@@ -337,7 +339,7 @@ def eval_main(args: argparse.Namespace) -> None:
                 
                 # print (weight)
 
-                with torch.autocast(device_type=device, dtype=torch.float16):
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
                     with torch.no_grad():
                         o = action_model(state)  # (3072, )
                         y = Bernoulli(o).sample()
@@ -393,11 +395,11 @@ def eval_main(args: argparse.Namespace) -> None:
 
     # name the output file
     outfile = f"{args.save_dir}/full_results_{args.num_fewshot}_shot"
-    if args.use_slicing:
-        if args.slice_with_action_model:
-            outfile += "_actionModelSlicing"
-        else:
-            outfile += "_uniformSlicing"
+    #if args.use_slicing:
+    #    if args.slice_with_action_model:
+    #        outfile += "_actionModelSlicing"
+    #    else:
+    #        outfile += "_uniformSlicing"
     outfile += ".json"
 
     with open(outfile, "w") as f:
@@ -409,11 +411,11 @@ def eval_main(args: argparse.Namespace) -> None:
 
     # save this in the task results output file
     task_outfile = f"{args.save_dir}/{args.num_fewshot}_shot_task_results"
-    if args.use_slicing:
-        if args.slice_with_action_model:
-            task_outfile += "_actionModelSlicing"
-        else:
-            task_outfile += "_uniformSlicing"
+    #if args.use_slicing:
+    #    if args.slice_with_action_model:
+    #        task_outfile += "_actionModelSlicing"
+    #    else:
+    #        task_outfile += "_uniformSlicing"
     task_outfile += ".json"
 
     with open(task_outfile, "w") as f:

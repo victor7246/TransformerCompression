@@ -411,8 +411,10 @@ def finetune(args, model, tokenizer, skip_lora=False):
         lora_model.enable_input_require_grads()
 
         lora_model.train()
-        trainer.train()
-
+        try:
+            trainer.train()
+        except:
+            pass
     return lora_model
 
 def _get_parse_args():

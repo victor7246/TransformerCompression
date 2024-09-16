@@ -1,1 +1,18 @@
-{"arc_challenge": 0.244, "arc_easy": 0.3653, "hellaswag": 0.3101, "mmlu_abstract_algebra": 0.22, "mmlu_business_ethics": 0.32, "mmlu_college_computer_science": 0.24, "mmlu_college_mathematics": 0.21, "mmlu_conceptual_physics": 0.2638, "mmlu_formal_logic": 0.2778, "mmlu_global_facts": 0.17, "mmlu_machine_learning": 0.3125, "mmlu_miscellaneous": 0.2478, "mmlu_philosophy": 0.1929, "piqa": 0.617, "winogrande": 0.5185, "average": 0.383}
+{
+    "arc_challenge": 0.2628,
+    "arc_easy": 0.4087,
+    "hellaswag": 0.4163,
+    "mmlu_abstract_algebra": 0.22,
+    "mmlu_business_ethics": 0.3,
+    "mmlu_college_computer_science": 0.25,
+    "mmlu_college_mathematics": 0.21,
+    "mmlu_conceptual_physics": 0.2638,
+    "mmlu_formal_logic": 0.2937,
+    "mmlu_global_facts": 0.18,
+    "mmlu_machine_learning": 0.3125,
+    "mmlu_miscellaneous": 0.2363,
+    "mmlu_philosophy": 0.1865,
+    "piqa": 0.66,
+    "winogrande": 0.5564,
+    "average": 0.4238
+}
