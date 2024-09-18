@@ -104,24 +104,24 @@ def slicing(model_name, layer, row_indices):
             layer.mlp.gate_proj.weight[row_indices, :]
         )
 
-        try:
-            layer.mlp.gate_proj.lora_B.default.weight.data = (
-                layer.mlp.gate_proj.lora_B.default.weight[row_indices, :]
-            )
-        except:
-            pass
+        #try:
+        #    layer.mlp.gate_proj.lora_B.default.weight.data = (
+        #        layer.mlp.gate_proj.lora_B.default.weight[row_indices, :]
+        #    )
+        #except:
+        #    pass
 
         layer.mlp.up_proj.out_features = len(row_indices)
         layer.mlp.up_proj.weight.data = (
             layer.mlp.up_proj.weight[row_indices, :]
         )
 
-        try:
-            layer.mlp.up_proj.lora_B.default.weight.data = (
-                layer.mlp.up_proj.lora_B.default.weight[row_indices, :]
-            )
-        except:
-            pass
+        #try:
+        #    layer.mlp.up_proj.lora_B.default.weight.data = (
+        #        layer.mlp.up_proj.lora_B.default.weight[row_indices, :]
+        #    )
+        #except:
+        #    pass
 
         # revert changes on output layer
         layer.mlp.down_proj.in_features = len(row_indices)
@@ -129,12 +129,12 @@ def slicing(model_name, layer, row_indices):
             :, row_indices
         ]
 
-        try:
-            layer.mlp.down_proj.lora_A.default.weight.data = (
-                layer.mlp.down_proj.lora_A.default.weight[:, row_indices]
-            )
-        except:
-            pass 
+        #try:
+        #    layer.mlp.down_proj.lora_A.default.weight.data = (
+        #        layer.mlp.down_proj.lora_A.default.weight[:, row_indices]
+        #    )
+        #except:
+        #    pass 
 
     elif 'falcon' in model_name:
         # slice the intermediate and output weight matrices appropriately
@@ -143,12 +143,12 @@ def slicing(model_name, layer, row_indices):
             layer.mlp.dense_h_to_4h.weight[row_indices, :]
         )
 
-        try:
-            layer.mlp.dense_h_to_4h.lora_B.default.weight.data = (
-                layer.mlp.dense_h_to_4h.lora_B.default.weight[row_indices, :]
-            )
-        except:
-            pass
+        #try:
+        #    layer.mlp.dense_h_to_4h.lora_B.default.weight.data = (
+        #        layer.mlp.dense_h_to_4h.lora_B.default.weight[row_indices, :]
+        #    )
+        #except:
+        #    pass
 
         # revert changes on output layer
         layer.mlp.dense_4h_to_h.in_features = len(row_indices)
@@ -156,12 +156,12 @@ def slicing(model_name, layer, row_indices):
             :, row_indices
         ]
 
-        try:
-            layer.mlp.dense_4h_to_h.lora_A.default.weight.data = (
-                layer.mlp.dense_4h_to_h.lora_A.default.weight[:, row_indices]
-            )
-        except:
-            pass 
+        #try:
+        #    layer.mlp.dense_4h_to_h.lora_A.default.weight.data = (
+        #        layer.mlp.dense_4h_to_h.lora_A.default.weight[:, row_indices]
+        #    )
+        #except:
+        #    pass 
 
     return layer
 
@@ -607,7 +607,7 @@ if __name__ == "__main__":
     logger.debug(f"args: {args}")
 
     model_checkpoint_save_path = os.path.join(args.model_save_path, \
-        "model={}_finetune={}_sparsity={}.ckpt".format(args.model_name.split("/")[-1], args.finetune, args.sparsity_level))
+        "model={}_finetune={}_sparsity={}.ckpt".format(args.model_name.split("/")[-1], "False", args.sparsity_level))
     
     if args.activation.lower() == 'leakysilu':
         act_fn = LeakySiLU()
@@ -684,7 +684,7 @@ if __name__ == "__main__":
     if args.sparsity_level > 0:
         if args.sparsity_technique != 'random':
             all_rewards = []
-            best_score = 999999
+            best_score = 999999999
 
             if 'opt' in args.model_name:
                 action_model = SparsityPredictor(
@@ -704,146 +704,153 @@ if __name__ == "__main__":
 
             #if args.dtype == "fp16":
             #    action_model = action_model.half()
+            try:
+                action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
+                action_model.to(device)
+            except:
+                action_model.to(device)
 
-            action_model.to(device)
+                action_model.train()
 
-            action_model.train()
-
-            print(action_model)
-
-            print(
-                "Total number of parameters",
-                sum(p.numel() for p in action_model.parameters() if p.requires_grad),
-            )
-
-            optimizer = torch.optim.AdamW(
-                action_model.parameters(), lr=args.learning_rate_action
-            )
-
-            best_accuracy = 0
-
-            scaler = torch.cuda.amp.GradScaler()
-
-            for episode in tqdm(range(args.num_episodes)):
-                #optimizer.zero_grad()
-                
-                state_pool = []
-                action_pool = []
-                reward_pool = []
-
-                model = cp(model_orig)
-                #model_name, main_model = list(model.named_modules())[1]
-
-                total_loss = 0
-                count = 0
-                total_reward = 0
-                kld_loss = 0
-
-                for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model)):
-                    if 'opt' in args.model_name:
-                        weight = layer.fc1.weight.data  # (3072, 768)
-                    elif 'llama' in args.model_name:
-                        weight = layer.mlp.gate_proj.weight.data
-                    elif 'falcon' in args.model_name:
-                        weight = layer.mlp.dense_h_to_4h.weight.data
-                    else:
-                        ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
-
-                    state = Variable(cp(weight))
-                    
-                    # print (weight)
-
-                    with torch.autocast(device_type=device, dtype=torch.float16):
-                        o = action_model(state)  # (3072, )
-                        feat_len = state.shape[0]
-                        #y = Bernoulli(o).sample()
-                        #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                        #row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
-                        row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False)
-
-                    slicing(args.model_name, layer, row_indices)
-
-                    # get the updated rewards
-                    if 'opt' in args.model_name:
-                        main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].fc1.weight.data 
-                        new_w = layer.fc1.weight.data 
-                    elif 'llama' in args.model_name:
-                        main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.gate_proj.weight.data 
-                        new_w = layer.mlp.gate_proj.weight.data
-                    elif 'falcon' in args.model_name:
-                        main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data 
-                        new_w = layer.mlp.dense_h_to_4h.weight.data
-                    else:
-                        ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
-
-                    reward = calculate_activation_reward(main_w, new_w) #- action_model.calculate_l1_loss()
-
-                    state_pool.append(state)
-                    action_pool.append(row_indices)
-                    reward_pool.append(reward.item())
-
-                    total_reward += reward.item()
-                    count += 1
-
-                    if args.use_kld:
-                        kld_loss += action_model.calculate_total_loss()
-
-                    #print (reward)
-                    
-                reward_pool = discount_rewards(reward_pool)
-
-                for i in range(len(state_pool)):
-                    with torch.autocast(device_type=device, dtype=torch.float16):
-                        state = state_pool[i]
-                        action = Variable(action_pool[i])
-                        reward = reward_pool[i]
-
-                        o = action_model(state)  # (3072, )
-                        #y = Bernoulli(o)
-
-                        loss = -1 * torch.gather(torch.log(o),0,action).sum() * reward
-                        #loss = -1 * (torch.log(o)*action).mean() * reward  # Negtive score function x reward
-                        #print (reward)
-                        #print (o)
-                        #print (action)
-                        #print (loss)
-
-                        total_loss += loss.item()
-
-                    #loss.backward()
-                    #print (loss)
-
-                    if args.use_kld:
-                        loss += kld_loss
-
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad()
-                    #torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
-                
-                print ("Episode ", episode, " loss ", total_loss/count)
-                if args.no_wandb == False:
-                    wandb.log({"Episodic Loss": total_loss/count})
-                    wandb.log({"Episodic Reward": total_reward})
-
-                state_pool = []
-                action_pool = []
-                reward_pool = []
+                print(action_model)
 
                 print(
-                    "Episode",
-                    episode,
-                    "Avg reward",
-                    total_reward/count
-                )  
+                    "Total number of parameters",
+                    sum(p.numel() for p in action_model.parameters() if p.requires_grad),
+                )
 
-                if total_loss < best_score:
-                    best_score =  total_loss
-                    torch.save(action_model.state_dict(), model_checkpoint_save_path)
+                optimizer = torch.optim.AdamW(
+                    action_model.parameters(), lr=args.learning_rate_action
+                )
+
+                best_accuracy = 0
+
+                scaler = torch.cuda.amp.GradScaler()
+
+                for episode in tqdm(range(args.num_episodes)):
+                    #optimizer.zero_grad()
+                    
+                    state_pool = []
+                    action_pool = []
+                    reward_pool = []
+
+                    model = cp(model_orig)
+                    #model_name, main_model = list(model.named_modules())[1]
+
+                    total_loss = 0
+                    count = 0
+                    total_reward = 0
+                    kld_loss = 0
+
+                    for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model)):
+                        if 'opt' in args.model_name:
+                            weight = layer.fc1.weight.data  # (3072, 768)
+                        elif 'llama' in args.model_name:
+                            weight = layer.mlp.gate_proj.weight.data
+                        elif 'falcon' in args.model_name:
+                            weight = layer.mlp.dense_h_to_4h.weight.data
+                        else:
+                            ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+                        state = Variable(cp(weight))
+                        
+                        # print (weight)
+
+                        with torch.autocast(device_type=device, dtype=torch.float16):
+                            o = action_model(state)  # (3072, )
+                            feat_len = state.shape[0]
+                            #y = Bernoulli(o).sample()
+                            #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
+                            #row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+                            row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False)
+
+                        slicing(args.model_name, layer, row_indices)
+
+                        # get the updated rewards
+                        if 'opt' in args.model_name:
+                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].fc1.weight.data 
+                            new_w = layer.fc1.weight.data 
+                        elif 'llama' in args.model_name:
+                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.gate_proj.weight.data 
+                            new_w = layer.mlp.gate_proj.weight.data
+                        elif 'falcon' in args.model_name:
+                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data 
+                            new_w = layer.mlp.dense_h_to_4h.weight.data
+                        else:
+                            ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+
+                        reward = calculate_activation_reward(main_w, new_w) #- action_model.calculate_l1_loss()
+
+                        state_pool.append(state)
+                        action_pool.append(row_indices)
+                        reward_pool.append(reward.item())
+
+                        total_reward += reward.item()
+                        count += 1
+
+                        if args.use_kld:
+                            kld_loss += action_model.calculate_total_loss()
+
+                        #print (reward)
+                        
+                    reward_pool = discount_rewards(reward_pool)
+
+                    for i in range(len(state_pool)):
+                        with torch.autocast(device_type=device, dtype=torch.float16):
+                            state = state_pool[i]
+                            action = Variable(action_pool[i])
+                            reward = reward_pool[i]
+
+                            o = action_model(state)  # (3072, )
+                            #y = Bernoulli(o)
+
+                            loss = -1 * torch.gather(torch.log(o),0,action).sum() * reward
+                            #loss = -1 * (torch.log(o)*action).mean() * reward  # Negtive score function x reward
+                            #print (reward)
+                            #print (o)
+                            #print (action)
+                            #print (loss)
+
+                            total_loss += loss.item()
+
+                        #loss.backward()
+                        #print (loss)
+
+                        if args.use_kld:
+                            loss += kld_loss
+
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer.zero_grad()
+                        #torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
+                    
+                    print ("Episode ", episode, " loss ", total_loss/count)
+                    if args.no_wandb == False:
+                        wandb.log({"Episodic Loss": total_loss/count})
+                        wandb.log({"Episodic Reward": total_reward})
+
+                    state_pool = []
+                    action_pool = []
+                    reward_pool = []
+
+                    print(
+                        "Episode",
+                        episode,
+                        "Avg reward",
+                        total_reward/count
+                    )  
+
+                    if total_loss < best_score:
+                        best_score =  total_loss
+                        torch.save(action_model.state_dict(), model_checkpoint_save_path)
 
             ######## inference ############
-            action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
+            try:
+                action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
+            except:
+                pass
+
             action_model.eval()
 
             model = cp(model_orig)
