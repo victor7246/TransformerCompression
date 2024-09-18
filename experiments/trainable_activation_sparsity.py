@@ -684,7 +684,7 @@ if __name__ == "__main__":
     if args.sparsity_level > 0:
         if args.sparsity_technique != 'random':
             all_rewards = []
-            best_score = 0
+            best_score = 999999
 
             if 'opt' in args.model_name:
                 action_model = SparsityPredictor(
