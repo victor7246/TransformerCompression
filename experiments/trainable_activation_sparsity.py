@@ -73,12 +73,12 @@ def slicing(model_name, layer, row_indices):
             layer.fc1.weight[row_indices, :]
         )
 
-        try:
-            layer.fc1.lora_B.default.weight.data = (
-                layer.fc1.lora_B.default.weight[row_indices, :]
-            )
-        except:
-            pass
+        #try:
+        #    layer.fc1.lora_B.default.weight.data = (
+        #        layer.fc1.lora_B.default.weight[row_indices, :]
+        #    )
+        #except:
+        #    pass
 
         layer.fc1.bias.data = layer.fc1.bias[
             row_indices
@@ -90,12 +90,12 @@ def slicing(model_name, layer, row_indices):
             :, row_indices
         ]
 
-        try:
-            layer.fc2.lora_A.default.weight.data = (
-                layer.fc2.lora_A.default.weight[:, row_indices]
-            )
-        except:
-            pass 
+        #try:
+        #    layer.fc2.lora_A.default.weight.data = (
+        #        layer.fc2.lora_A.default.weight[:, row_indices]
+        #    )
+        #except:
+        #    pass 
     
     elif 'llama' in model_name:
         # slice the intermediate and output weight matrices appropriately
@@ -259,8 +259,9 @@ class SparsityPredictor(torch.nn.Module):
             + torch.log(alpha)
             - torch.log(1 - alpha)
         )
+        #keep_probs = nn.Sigmoid()(alpha)
 
-        keep_probs = keep_probs * self.density_level
+        #keep_probs = keep_probs * self.density_level
         #keep_probs = torch.clip(keep_probs, max=self.density_level)
 
         self.keep_probs = keep_probs
@@ -283,6 +284,7 @@ def calculate_activation_reward(weight_matrix1, weight_matrix2):
     #dist = calculation(s1.unsqueeze(1),s2.unsqueeze(1))
     dist = stats.ks_2samp(s1.detach().cpu().numpy(), s2.detach().cpu().numpy()).statistic
 
+    #dist = s2.max() #torch.abs(s2.max() - 1)
     if dist == 0:
         return 99999
     else:
@@ -339,7 +341,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
 
-def finetune(args, model, tokenizer, skip_lora=False):
+def finetune(args, model, tokenizer, skip_lora=False, base_model=False):
     # get the dataset for finetuning
     finetune_ds = data_utils.get_dataset(args.finetune_dataset)
     finetune_train_loader = data_utils.prepare_dataloader(
@@ -411,10 +413,11 @@ def finetune(args, model, tokenizer, skip_lora=False):
         lora_model.enable_input_require_grads()
 
         lora_model.train()
-        try:
-            trainer.train()
-        except:
-            pass
+        if base_model == False:
+            try:
+                trainer.train()
+            except:
+                pass
     return lora_model
 
 def _get_parse_args():
@@ -655,7 +658,7 @@ if __name__ == "__main__":
             else:
                 ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
-    model_orig = finetune(args, model_orig, tokenizer)
+    #model_orig = finetune(args, model_orig, tokenizer, base_model=True)
 
     model_orig.eval()
 
@@ -736,7 +739,7 @@ if __name__ == "__main__":
                 total_reward = 0
                 kld_loss = 0
 
-                for i, layer in enumerate(get_all_layers(args.model_name, model)):
+                for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model)):
                     if 'opt' in args.model_name:
                         weight = layer.fc1.weight.data  # (3072, 768)
                     elif 'llama' in args.model_name:
@@ -752,21 +755,23 @@ if __name__ == "__main__":
 
                     with torch.autocast(device_type=device, dtype=torch.float16):
                         o = action_model(state)  # (3072, )
-                        y = Bernoulli(o).sample()
+                        feat_len = state.shape[0]
+                        #y = Bernoulli(o).sample()
                         #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                        row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+                        #row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+                        row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False)
 
                     slicing(args.model_name, layer, row_indices)
 
                     # get the updated rewards
                     if 'opt' in args.model_name:
-                        main_w = get_all_layers(args.model_name, model_orig)[i].fc1.weight.data 
+                        main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].fc1.weight.data 
                         new_w = layer.fc1.weight.data 
                     elif 'llama' in args.model_name:
-                        main_w = get_all_layers(args.model_name, model_orig)[i].mlp.gate_proj.weight.data 
+                        main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.gate_proj.weight.data 
                         new_w = layer.mlp.gate_proj.weight.data
                     elif 'falcon' in args.model_name:
-                        main_w = get_all_layers(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data 
+                        main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data 
                         new_w = layer.mlp.dense_h_to_4h.weight.data
                     else:
                         ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
@@ -774,7 +779,7 @@ if __name__ == "__main__":
                     reward = calculate_activation_reward(main_w, new_w) #- action_model.calculate_l1_loss()
 
                     state_pool.append(state)
-                    action_pool.append(y)
+                    action_pool.append(row_indices)
                     reward_pool.append(reward.item())
 
                     total_reward += reward.item()
@@ -794,9 +799,10 @@ if __name__ == "__main__":
                         reward = reward_pool[i]
 
                         o = action_model(state)  # (3072, )
-                        y = Bernoulli(o)
+                        #y = Bernoulli(o)
 
-                        loss = -1 * (torch.log(o)*action).mean() * reward  # Negtive score function x reward
+                        loss = -1 * torch.gather(torch.log(o),0,action).sum() * reward
+                        #loss = -1 * (torch.log(o)*action).mean() * reward  # Negtive score function x reward
                         #print (reward)
                         #print (o)
                         #print (action)
@@ -832,8 +838,8 @@ if __name__ == "__main__":
                     total_reward/count
                 )  
 
-                if total_reward > best_score:
-                    best_score =  total_reward
+                if total_loss < best_score:
+                    best_score =  total_loss
                     torch.save(action_model.state_dict(), model_checkpoint_save_path)
 
             ######## inference ############
@@ -842,7 +848,7 @@ if __name__ == "__main__":
 
             model = cp(model_orig)
 
-            for layer in get_all_layers(args.model_name, model):
+            for layer in get_all_layers_before_lora(args.model_name, model):
                 if 'opt' in args.model_name:
                     weight = layer.fc1.weight.data  # (3072, 768)
                 elif 'llama' in args.model_name:
@@ -859,20 +865,23 @@ if __name__ == "__main__":
                 with torch.autocast(device_type=device, dtype=torch.float16):
                     with torch.no_grad():
                         o = action_model(state)  # (3072, )
-                        y = Bernoulli(o).sample()
+                        feat_len = state.shape[0]
+                        #y = Bernoulli(o).sample()
                         #y = (o > args.sparsity_level).long().to(o.device)  # (3072, )
-                        row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+                        #row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
+                        row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False)
 
                 slicing(args.model_name, layer, row_indices)
         else:
-            for layer in get_all_layers(args.model_name, model):
+            for layer in get_all_layers_before_lora(args.model_name, model):
                 random_slicing(args.model_name, layer, args.sparsity_level)
 
     #model = torch.load("sliced_model.pt")
-    model.train()
-    model = finetune(args, model, tokenizer, skip_lora=True)
-    new_parameters = sum(p.numel() for p in model.parameters())
 
+    new_parameters = sum(p.numel() for p in model.parameters())
+    if args.finetune:
+        model.train()
+        model = finetune(args, model, tokenizer, skip_lora=False)
     model.eval()
 
     start = torch.cuda.Event(enable_timing=True)

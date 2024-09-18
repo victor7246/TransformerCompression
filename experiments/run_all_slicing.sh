@@ -1,16 +1,16 @@
+for sparsity_level in 0.1 0.2 0.25 0.3
+do
+for dataset in wikitext2 #alpaca
+do
 for model in facebook/opt-125m facebook/opt-1.3b facebook/opt-2.7b facebook/opt-6.7b
 do
-for dataset in wikitext2 alpaca
-do
-for sparsity_level in 0.1 0.2 0.3 0.4 0.5
-do
-for sparsity_technique in random bernoulli
+for sparsity_technique in bernoulli
 do
 TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py \
     --log DEBUG \
     --use_gpu \
     --model_name ${model}  \
-    --num_episodes 20 \
+    --num_episodes 30 \
     --learning-rate-action 0.0005 \
     --sparsity_level ${sparsity_level} \
     --ppl-eval-dataset ${dataset}       \
@@ -26,13 +26,13 @@ TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIB
     --save-steps 16 \
     --epochs 1 \
     --model_save_path "../models/" \
-    --sparsity_technique ${sparsity_technique}
+    --sparsity_technique ${sparsity_technique} \
 
 TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py \
     --log DEBUG \
     --use_gpu \
     --model_name ${model}  \
-    --num_episodes 20 \
+    --num_episodes 30 \
     --learning-rate-action 0.0005 \
     --sparsity_level ${sparsity_level} \
     --ppl-eval-dataset ${dataset}       \

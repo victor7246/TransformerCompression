@@ -57,6 +57,18 @@ def get_all_layers(model_name, model):
 
     return all_layers
 
+def get_all_layers_before_lora(model_name, model):
+    if 'opt' in model_name:
+        all_layers = model.model.decoder.layers
+    elif 'llama' in model_name:
+        all_layers = model.model.layers
+    elif 'falcon' in model_name:
+        all_layers = model.model.transformer.h
+    else:
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+
+    return all_layers
+
 TASK_METRIC_MAP = {
     "mmlu_abstract_algebra": "acc,none",
     "mmlu_business_ethics": "acc,none",
@@ -325,7 +337,7 @@ def eval_main(args: argparse.Namespace) -> None:
 
             orig_parameters = sum(p.numel() for p in model.parameters())
 
-            for layer in get_all_layers(args.model, model):
+            for layer in get_all_layers_before_lora(args.model, model):
                 if 'opt' in args.model:
                     weight = layer.fc1.weight.data  # (3072, 768)
                 elif 'llama' in args.model:
@@ -350,14 +362,14 @@ def eval_main(args: argparse.Namespace) -> None:
         else:
             orig_parameters = sum(p.numel() for p in model.parameters())
 
-            for layer in get_all_layers(args.model, model):
+            for layer in get_all_layers_before_lora(args.model, model):
                 random_slicing(args.model, layer, args.sparsity)
 
         new_parameters = sum(p.numel() for p in model.parameters())
         print ("Sparsity achieved {}%".format(int(100*(1-new_parameters/orig_parameters))))
 
     if args.activation != '':
-        for layer in get_all_layers(args.model, model):
+        for layer in get_all_layers_before_lora(args.model, model):
             if 'opt' in args.model:
                 layer.activation_fn = act_fn  # (3072, 768)
             elif 'llama' in args.model:
@@ -369,7 +381,7 @@ def eval_main(args: argparse.Namespace) -> None:
 
 
     if args.finetune:
-        model = finetune(args, model, tokenizer)
+        model = finetune(args, model, tokenizer, skip_lora=False)
 
     hflm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
 
