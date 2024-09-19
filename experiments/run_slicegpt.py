@@ -210,7 +210,11 @@ def slicing_main(args: argparse.Namespace) -> None:
         # run GC and cleanup GPU memory
         utils.cleanup_memory()
 
-    original_param_count = sum(int(p.nelement()) for p in model.parameters())
+    #original_param_count = sum(int(p.nelement()) for p in model.parameters())
+    for name, p in model.named_parameters():
+        print (name, p.shape, p.numel())
+
+    original_param_count = sum(int(p.numel()) for p in model.parameters())
     logging.info(f'Original model parameters: {original_param_count:,d}')
 
     # compute new embedding dimension given the desired sparsity level
@@ -222,7 +226,12 @@ def slicing_main(args: argparse.Namespace) -> None:
     )
 
     scheduler = ConstSlicingScheduler(new_embedding_dimension)
+
+    #print (model_adapter.model)
+
     rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
+
+    #print (model_adapter.model)
 
     if args.save_dir:
         sliced_model_dir = pathlib.Path(args.save_dir)
@@ -256,11 +265,17 @@ def slicing_main(args: argparse.Namespace) -> None:
         logging.info(f"Saved sliced model to {args.save_dir}")
 
     reset_model_device()
+
+    for name, p in model.named_parameters():
+        print (name, p.shape, p.numel())
     dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
     logging.info(f'After rotating and slicing {dataset_ppl:.4f}')
     wandb.log({"sliced_ppl": dataset_ppl})
 
-    sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
+    #print (model)
+
+    #sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
+    sliced_param_count = sum(int(p.numel()) for p in model.parameters())
     sliced_fraction = 1.0 - sliced_param_count / original_param_count
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
 

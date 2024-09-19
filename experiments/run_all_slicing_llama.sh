@@ -2,12 +2,12 @@ for sparsity_level in 0.1 0.2 0.25 0.3
 do
 for dataset in wikitext2 #alpaca
 do
-for model in meta-llama/Llama-2-7b-hf
+for model in meta-llama/Llama-2-7b-hf #tiiuae/falcon-7b
 do
 for sparsity_technique in bernoulli
 do
 
-TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0 python trainable_activation_sparsity.py \
+TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=3 python trainable_activation_sparsity.py \
     --log DEBUG \
     --use_gpu \
     --model_name ${model}  \
@@ -27,7 +27,8 @@ TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIB
     --save-steps 16 \
     --epochs 1 \
     --model_save_path "../models/" \
-    --sparsity_technique ${sparsity_technique}
+    --sparsity_technique ${sparsity_technique} \
+    --no-wandb
 
 TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=2 python trainable_activation_sparsity.py \
     --log DEBUG \

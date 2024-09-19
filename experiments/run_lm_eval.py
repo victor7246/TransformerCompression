@@ -328,7 +328,7 @@ def eval_main(args: argparse.Namespace) -> None:
                 raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
             
             model_checkpoint_save_path = os.path.join(args.model_save_path, \
-            "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], args.finetune, args.sparsity))
+            "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], "False", args.sparsity))
 
             action_model.to(config.device)
             
