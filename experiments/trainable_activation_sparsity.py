@@ -95,8 +95,8 @@ def slicing(model_name, layer, row_indices):
         #        layer.fc2.lora_A.default.weight[:, row_indices]
         #    )
         #except:
-        #    pass 
-    
+        #    pass
+
     elif 'llama' in model_name:
         # slice the intermediate and output weight matrices appropriately
         layer.mlp.gate_proj.out_features = len(row_indices)
@@ -134,7 +134,7 @@ def slicing(model_name, layer, row_indices):
         #        layer.mlp.down_proj.lora_A.default.weight[:, row_indices]
         #    )
         #except:
-        #    pass 
+        #    pass
 
     elif 'falcon' in model_name:
         # slice the intermediate and output weight matrices appropriately
@@ -161,7 +161,7 @@ def slicing(model_name, layer, row_indices):
         #        layer.mlp.dense_4h_to_h.lora_A.default.weight[:, row_indices]
         #    )
         #except:
-        #    pass 
+        #    pass
 
     return layer
 
@@ -173,7 +173,7 @@ def get_all_layers(model_name, model):
     elif 'falcon' in model_name:
         all_layers = model.base_model.model.transformer.h
     else:
-        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
     return all_layers
 
@@ -185,9 +185,15 @@ def get_all_layers_before_lora(model_name, model):
     elif 'falcon' in model_name:
         all_layers = model.model.transformer.h
     else:
-        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
     return all_layers
+
+def get_memory_consumption(model):
+    mem_params = sum([param.nelement()*param.element_size() for param in model.parameters()])
+    mem_bufs = sum([buf.nelement()*buf.element_size() for buf in model.buffers()])
+    mem = mem_params + mem_bufs # in bytes
+    return mem
 
 class SparsityPredictor(torch.nn.Module):
     def __init__(
@@ -274,13 +280,13 @@ class SparsityPredictor(torch.nn.Module):
 def calculate_activation_reward(weight_matrix1, weight_matrix2):
     if weight_matrix1.dtype == torch.float16:
         weight_matrix1 = weight_matrix1.to(torch.float32)
-    
+
     if weight_matrix2.dtype == torch.float16:
         weight_matrix2 = weight_matrix2.to(torch.float32)
 
     _,s1,_ = torch.svd(weight_matrix1)
     _,s2,_ = torch.svd(weight_matrix2)
-    
+
     #dist = calculation(s1.unsqueeze(1),s2.unsqueeze(1))
     dist = stats.ks_2samp(s1.detach().cpu().numpy(), s2.detach().cpu().numpy()).statistic
 
@@ -437,7 +443,7 @@ def _get_parse_args():
     )
 
     parser.add_argument("--seed", type=int, default=42, help="Seed for sampling the calibration data.")
-    
+
     parser.add_argument(
         "--model_name",
         dest="model_name",
@@ -608,7 +614,7 @@ if __name__ == "__main__":
 
     model_checkpoint_save_path = os.path.join(args.model_save_path, \
         "model={}_finetune={}_sparsity={}.ckpt".format(args.model_name.split("/")[-1], "False", args.sparsity_level))
-    
+
     if args.activation.lower() == 'leakysilu':
         act_fn = LeakySiLU()
     elif args.activation.lower() == 'leakygelu':
@@ -646,7 +652,7 @@ if __name__ == "__main__":
         varied_seqlen=args.varied_seqlen,
         seed=args.seed,
     )
-    
+
     if args.activation != '':
         for layer in get_all_layers_before_lora(args.model_name, model_orig):
             if 'opt' in args.model_name:
@@ -668,10 +674,12 @@ if __name__ == "__main__":
     dataset_ppl = gpu_utils.evaluate_ppl(model_orig, model_orig.config.pad_token_id, ppl_eval_loader)
     end.record()
     torch.cuda.synchronize()
+    print(f'Memory consumption before finetuning: {get_memory_consumption(model_orig)}')
     print(f'PPL before finetuning: {dataset_ppl:.4f}')
     print(f'Total inference time before: {start.elapsed_time(end):.4f}')
 
     if args.no_wandb == False:
+        wandb.log({"Memory Before": get_memory_consumption(model_orig)})
         wandb.log({"PPL Before": dataset_ppl})
         wandb.log({"Inference time before": start.elapsed_time(end)})
     #wandb.log({"pre_finetune_ppl": dataset_ppl})
@@ -700,7 +708,7 @@ if __name__ == "__main__":
                 )
             else:
                 raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
-                
+
 
             #if args.dtype == "fp16":
             #    action_model = action_model.half()
@@ -729,12 +737,13 @@ if __name__ == "__main__":
 
                 for episode in tqdm(range(args.num_episodes)):
                     #optimizer.zero_grad()
-                    
+
                     state_pool = []
                     action_pool = []
                     reward_pool = []
 
                     model = cp(model_orig)
+                    # model.train() ? 
                     #model_name, main_model = list(model.named_modules())[1]
 
                     total_loss = 0
@@ -753,7 +762,7 @@ if __name__ == "__main__":
                             ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
                         state = Variable(cp(weight))
-                        
+
                         # print (weight)
 
                         with torch.autocast(device_type=device, dtype=torch.float16):
@@ -768,13 +777,13 @@ if __name__ == "__main__":
 
                         # get the updated rewards
                         if 'opt' in args.model_name:
-                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].fc1.weight.data 
-                            new_w = layer.fc1.weight.data 
+                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].fc1.weight.data
+                            new_w = layer.fc1.weight.data
                         elif 'llama' in args.model_name:
-                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.gate_proj.weight.data 
+                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.gate_proj.weight.data
                             new_w = layer.mlp.gate_proj.weight.data
                         elif 'falcon' in args.model_name:
-                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data 
+                            main_w = get_all_layers_before_lora(args.model_name, model_orig)[i].mlp.dense_h_to_4h.weight.data
                             new_w = layer.mlp.dense_h_to_4h.weight.data
                         else:
                             ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
@@ -792,7 +801,7 @@ if __name__ == "__main__":
                             kld_loss += action_model.calculate_total_loss()
 
                         #print (reward)
-                        
+
                     reward_pool = discount_rewards(reward_pool)
 
                     for i in range(len(state_pool)):
@@ -824,7 +833,7 @@ if __name__ == "__main__":
                         scaler.update()
                         optimizer.zero_grad()
                         #torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
-                    
+
                     print ("Episode ", episode, " loss ", total_loss/count)
                     if args.no_wandb == False:
                         wandb.log({"Episodic Loss": total_loss/count})
@@ -839,7 +848,7 @@ if __name__ == "__main__":
                         episode,
                         "Avg reward",
                         total_reward/count
-                    )  
+                    )
 
                     if total_loss < best_score:
                         best_score =  total_loss
@@ -866,7 +875,7 @@ if __name__ == "__main__":
                     ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
                 state = Variable(cp(weight))
-                
+
                 # print (weight)
 
                 with torch.autocast(device_type=device, dtype=torch.float16):
@@ -897,11 +906,13 @@ if __name__ == "__main__":
     dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
     end.record()
     torch.cuda.synchronize()
+    print(f'Memory after finetuning: ', get_memory_consumption(model))
     print(f'PPL after finetuning: {dataset_ppl2:.4f}')
     print(f'Total inference time after: {start.elapsed_time(end):.4f}')
     print(f'Sparsity achieved: {int((1-new_parameters/orig_parameters)*100)}%')
 
     if args.no_wandb == False:
+        wandb.log({"Memory After": get_memory_consumption(model)})
         wandb.log({"PPL After": dataset_ppl2})
         wandb.log({"Sparsity Achieved": int((1-new_parameters/orig_parameters)*100)})
         wandb.log({"Inference time after": start.elapsed_time(end)})
