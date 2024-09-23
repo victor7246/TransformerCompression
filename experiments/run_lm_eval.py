@@ -48,24 +48,28 @@ from bernoulligpt_utils import LeakyGeLU, LeakySiLU
 def get_all_layers(model_name, model):
     if 'opt' in model_name:
         all_layers = model.base_model.decoder.layers
+    elif  'phi' in model_name:
+        all_layers = model.base_model.model.layers
     elif 'llama' in model_name:
         all_layers = model.base_model.layers
     elif 'falcon' in model_name:
         all_layers = model.base_model.transformer.h
     else:
-        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+        raise ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")    
 
     return all_layers
 
 def get_all_layers_before_lora(model_name, model):
     if 'opt' in model_name:
         all_layers = model.model.decoder.layers
+    elif  'phi' in model_name:
+        all_layers = model.model.layers
     elif 'llama' in model_name:
         all_layers = model.model.layers
     elif 'falcon' in model_name:
         all_layers = model.model.transformer.h
     else:
-        raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")    
+        raise ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")    
 
     return all_layers
 
@@ -264,7 +268,7 @@ def calculate_avg_accuracy(task_names: str, results: dict) -> float:
 def eval_main(args: argparse.Namespace) -> None:
     logging.info("Running SliceGPT LM eval experiment.")
 
-    if args.activation.lower() == 'leakysilu':
+    if args.activation.lower() == 'leakysilu' or args.activation.lower() == 'silu' :
         act_fn = LeakySiLU()
     elif args.activation.lower() == 'leakygelu':
         act_fn = LeakyGeLU()
@@ -316,7 +320,7 @@ def eval_main(args: argparse.Namespace) -> None:
                 action_model = SparsityPredictor(
                     model.config.hidden_size, model.config.ffn_dim, args.sparsity
                 )
-            elif 'llama' in args.model:
+            elif 'llama' in args.model or 'phi' in args.model:
                 action_model = SparsityPredictor(
                     model.config.hidden_size, model.config.intermediate_size, args.sparsity
                 )
@@ -325,7 +329,7 @@ def eval_main(args: argparse.Namespace) -> None:
                     model.config.hidden_size, model.config.ffn_hidden_size, args.sparsity
                 )
             else:
-                raise ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
+                raise ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
             
             model_checkpoint_save_path = os.path.join(args.model_save_path, \
             "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], "False", args.sparsity))
@@ -340,6 +344,8 @@ def eval_main(args: argparse.Namespace) -> None:
             for layer in get_all_layers_before_lora(args.model, model):
                 if 'opt' in args.model:
                     weight = layer.fc1.weight.data  # (3072, 768)
+                elif 'phi' in args.model:
+                    weight = layer.mlp.fc1.weight.data  # (3072, 768)
                 elif 'llama' in args.model:
                     weight = layer.mlp.gate_proj.weight.data
                 elif 'falcon' in args.model:
@@ -370,7 +376,7 @@ def eval_main(args: argparse.Namespace) -> None:
 
     if args.activation != '':
         for layer in get_all_layers_before_lora(args.model, model):
-            if 'opt' in args.model:
+            if 'opt' in args.model or 'phi' in args.model:
                 layer.activation_fn = act_fn  # (3072, 768)
             elif 'llama' in args.model:
                 layer.mlp.act_fn = act_fn

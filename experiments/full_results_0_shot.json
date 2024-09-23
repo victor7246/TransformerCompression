@@ -1,23 +1,23 @@
 {
     "arc_challenge": {
-        "acc,none": 0.24829351535836178,
-        "acc_stderr,none": 0.012624912868089679,
-        "acc_norm,none": 0.29948805460750855,
-        "acc_norm_stderr,none": 0.013385021637313725,
+        "acc,none": 0.39078498293515357,
+        "acc_stderr,none": 0.014258563880513803,
+        "acc_norm,none": 0.39419795221843,
+        "acc_norm_stderr,none": 0.014280522667467148,
         "alias": "arc_challenge"
     },
     "arc_easy": {
-        "acc,none": 0.5593434343434344,
-        "acc_stderr,none": 0.01018726463571219,
-        "acc_norm,none": 0.4936868686868687,
-        "acc_norm_stderr,none": 0.010258965668044465,
+        "acc,none": 0.6931818181818182,
+        "acc_stderr,none": 0.00946307583519877,
+        "acc_norm,none": 0.6759259259259259,
+        "acc_norm_stderr,none": 0.009603728850095139,
         "alias": "arc_easy"
     },
     "hellaswag": {
-        "acc,none": 0.4303923521210914,
-        "acc_stderr,none": 0.0049411916073175775,
-        "acc_norm,none": 0.5576578370842462,
-        "acc_norm_stderr,none": 0.004956494059865118,
+        "acc,none": 0.5449113722366062,
+        "acc_stderr,none": 0.004969611554685557,
+        "acc_norm,none": 0.7113124875522804,
+        "acc_norm_stderr,none": 0.004522262128177374,
         "alias": "hellaswag"
     },
     "mmlu_abstract_algebra": {
@@ -27,8 +27,8 @@
     },
     "mmlu_business_ethics": {
         "alias": "business_ethics",
-        "acc,none": 0.25,
-        "acc_stderr,none": 0.04351941398892446
+        "acc,none": 0.29,
+        "acc_stderr,none": 0.045604802157206865
     },
     "mmlu_college_computer_science": {
         "alias": "college_computer_science",
@@ -37,49 +37,49 @@
     },
     "mmlu_college_mathematics": {
         "alias": "college_mathematics",
-        "acc,none": 0.26,
-        "acc_stderr,none": 0.0440844002276808
+        "acc,none": 0.29,
+        "acc_stderr,none": 0.045604802157206865
     },
     "mmlu_conceptual_physics": {
         "alias": "conceptual_physics",
-        "acc,none": 0.2553191489361702,
-        "acc_stderr,none": 0.028504856470514203
+        "acc,none": 0.28085106382978725,
+        "acc_stderr,none": 0.029379170464124797
     },
     "mmlu_formal_logic": {
         "alias": "formal_logic",
-        "acc,none": 0.1746031746031746,
-        "acc_stderr,none": 0.03395490020856111
+        "acc,none": 0.24603174603174602,
+        "acc_stderr,none": 0.03852273364924316
     },
     "mmlu_global_facts": {
         "alias": "global_facts",
-        "acc,none": 0.23,
-        "acc_stderr,none": 0.04229525846816507
+        "acc,none": 0.2,
+        "acc_stderr,none": 0.04020151261036849
     },
     "mmlu_machine_learning": {
         "alias": "machine_learning",
-        "acc,none": 0.26785714285714285,
-        "acc_stderr,none": 0.04203277291467762
+        "acc,none": 0.2857142857142857,
+        "acc_stderr,none": 0.042878587513404585
     },
     "mmlu_miscellaneous": {
         "alias": "miscellaneous",
-        "acc,none": 0.24904214559386972,
-        "acc_stderr,none": 0.015464676163396064
+        "acc,none": 0.3524904214559387,
+        "acc_stderr,none": 0.01708415024408134
     },
     "mmlu_philosophy": {
         "alias": "philosophy",
-        "acc,none": 0.21543408360128619,
-        "acc_stderr,none": 0.023350225475471442
+        "acc,none": 0.2604501607717042,
+        "acc_stderr,none": 0.0249267232248456
     },
     "piqa": {
-        "acc,none": 0.7143634385201306,
-        "acc_stderr,none": 0.010539303948661828,
-        "acc_norm,none": 0.7187159956474428,
-        "acc_norm_stderr,none": 0.010490509832327499,
+        "acc,none": 0.7589771490750816,
+        "acc_stderr,none": 0.009979042717267253,
+        "acc_norm,none": 0.7687704026115343,
+        "acc_norm_stderr,none": 0.009837063180625381,
         "alias": "piqa"
     },
     "winogrande": {
-        "acc,none": 0.5951065509076559,
-        "acc_stderr,none": 0.013795927003124962,
+        "acc,none": 0.6637726913970008,
+        "acc_stderr,none": 0.013277286593993463,
         "alias": "winogrande"
     }
 }

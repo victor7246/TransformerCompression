@@ -604,7 +604,7 @@ def _get_parse_args():
         help="target module option to apply lora to (names of attn i/p, attn o/p and mlp in LayerAdapter)",
     )
 
-    parser.add_argument('--wandb-project', type=str, default="bernoulligpt-training", help="wandb project name.")
+    parser.add_argument('--wandb-project', type=str, default="bernoulligpt-metrics", help="wandb project name.")
     parser.add_argument('--no-wandb', action="store_true", help="Disable wandb.")
 
     args = parser.parse_args()
@@ -688,7 +688,7 @@ if __name__ == "__main__":
         dataset=ppl_ds["validation"],
         tokenizer=tokenizer,
         max_seqlen=args.ppl_eval_seqlen,
-        batch_size=args.ppl_eval_batch_size,
+        batch_size=1,
         nsamples=args.ppl_eval_nsamples,
         varied_seqlen=args.varied_seqlen,
         seed=args.seed,
@@ -696,36 +696,24 @@ if __name__ == "__main__":
 
     model_adapter.model.eval()
 
-    dataset_ppl = gpu_utils.evaluate_ppl(model_adapter.model, config.pad_token_id, ppl_eval_loader)
-
-    print(f'PPL before finetuning: {dataset_ppl:.4f}')
+    for batch in ppl_eval_loader:
+        break
     
-    if args.no_wandb == False:
-        wandb.log({"PPL Before": dataset_ppl})
-        #wandb.log({"Inference time before": start.elapsed_time(end)})
-        #wandb.log({"pre_finetune_ppl": dataset_ppl})
+    #start = torch.cuda.Event(enable_timing=True)
+    #end = torch.cuda.Event(enable_timing=True)
+    #start.record()
+    #_ = model_adapter.model(batch['input_ids'].to(model_adapter.model.device))
+    #end.record()
+    #torch.cuda.synchronize()
+    #print(f'Total inference time before: {start.elapsed_time(end):.4f}')
 
-    orig_parameters = sum(p.numel() for p in model_adapter.model.parameters())
+    #flops = FlopCountAnalysis(model_adapter.model, batch['input_ids'].to(model_adapter.model.device))
+    #tot = flops.total()
+    #print ("Before flops", tot)
 
-    all_svds_main_model = {}
-    for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model_adapter.model)):
-        if 'opt' in args.model_name :
-            main_w = layer.fc1.weight.data 
-        elif 'phi' in args.model_name:
-            main_w = layer.mlp.fc1.weight.data 
-        elif 'llama' in args.model_name:
-            main_w = layer.mlp.gate_proj.weight.data 
-        elif 'falcon' in args.model_name:
-            main_w = layer.mlp.dense_h_to_4h.weight.data 
-        else:
-            ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
-
-        if main_w.dtype == torch.float16:
-            main_w = main_w.to(torch.float32)
-        
-        _,s1,_ = torch.svd(main_w)
-
-        all_svds_main_model[i] = s1
+    #if args.no_wandb == False:
+    #    wandb.log({"Before time": start.elapsed_time(end)})
+    #    wandb.log({"Before flops": tot})
 
     del model_adapter
 
@@ -733,9 +721,6 @@ if __name__ == "__main__":
 
     if args.sparsity_level > 0:
         if args.sparsity_technique != 'random':
-            all_rewards = []
-            #best_score = 999999999
-            best_score = 0
 
             if 'opt' in args.model_name:
                 action_model = SparsityPredictor(
@@ -753,144 +738,15 @@ if __name__ == "__main__":
                 raise ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
                 
 
-            if os.path.exists(model_checkpoint_save_path):
-                action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
-                action_model.to(device)
-            else:
-                action_model.to(device)
-                action_model.train()
-                print(action_model)
-
-                print(
-                    "Total number of parameters",
-                    sum(p.numel() for p in action_model.parameters() if p.requires_grad),
-                )
-
-                optimizer = torch.optim.AdamW(
-                    action_model.parameters(), lr=args.learning_rate_action
-                )
-
-                best_accuracy = 0
-
-                scaler = torch.cuda.amp.GradScaler()
-
-                for episode in tqdm(range(args.num_episodes)):
-                    model = get_model_with_activation()
-                    
-                    state_pool = []
-                    action_pool = []
-                    reward_pool = []
-
-                    total_loss = 0
-                    count = 0
-                    total_reward = 0
-
-                    for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model)):
-                        if 'opt' in args.model_name:
-                            weight = layer.fc1.weight.data  # (3072, 768)
-                        elif 'phi' in args.model_name:
-                            weight = layer.mlp.fc1.weight.data  # (3072, 768)
-                        elif 'llama' in args.model_name:
-                            weight = layer.mlp.gate_proj.weight.data
-                        elif 'falcon' in args.model_name:
-                            weight = layer.mlp.dense_h_to_4h.weight.data
-                        else:
-                            ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
-
-                        state = Variable(cp(weight))
-                        
-                        # print (weight)
-
-                        with torch.autocast(device_type=device, dtype=torch.float16):
-                            o = action_model(state)  # (3072, )
-                            feat_len = state.shape[0]
-                            row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False).sort().values
-                            
-                        slicing(args.model_name, layer, row_indices)
-
-                        # get the updated rewards
-                        if 'opt' in args.model_name :
-                            new_w = layer.fc1.weight.data 
-                        elif 'phi' in args.model_name:
-                            new_w = layer.mlp.fc1.weight.data 
-                        elif 'llama' in args.model_name:
-                            new_w = layer.mlp.gate_proj.weight.data
-                        elif 'falcon' in args.model_name:
-                            new_w = layer.mlp.dense_h_to_4h.weight.data
-                        else:
-                            ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
-
-                        reward = calculate_activation_reward(all_svds_main_model[i], new_w) #- action_model.calculate_l1_loss()
-
-                        state_pool.append(state)
-                        action_pool.append(row_indices)
-                        reward_pool.append(reward.item())
-
-                        total_reward += reward.item()
-                        count += 1 
-
-                        #print (reward)
-                        
-                    reward_pool = discount_rewards(reward_pool)
-
-                    for i in range(len(state_pool)):
-                        with torch.autocast(device_type=device, dtype=torch.float16):
-                            state = state_pool[i]
-                            action = Variable(action_pool[i])
-                            reward = reward_pool[i]
-
-                            o = action_model(state)  # (3072, )
-                            #y = Bernoulli(o)
-
-                            loss = -1 * torch.gather(torch.log(o),0,action).sum() * reward
-
-                            total_loss += loss.item()
-
-                            if args.use_kld:
-                                kld_loss = action_model.calculate_total_loss()
-                                loss += kld_loss
-
-                        scaler.scale(loss).backward()
-                        scaler.step(optimizer)
-                        scaler.update()
-                        optimizer.zero_grad()
-                        torch.nn.utils.clip_grad_norm_(action_model.parameters(), 1.0)
-                    
-                    print ("Episode ", episode, " loss ", total_loss/count)
-                    if args.no_wandb == False:
-                        wandb.log({"Episodic Loss": total_loss/count})
-                        wandb.log({"Episodic Reward": total_reward})
-
-                    state_pool = []
-                    action_pool = []
-                    reward_pool = []
-
-                    print(
-                        "Episode",
-                        episode,
-                        "Avg reward",
-                        total_reward/count
-                    )  
-
-                    #if total_loss < best_score:
-                    #    best_score =  total_loss
-                    #    torch.save(action_model.state_dict(), model_checkpoint_save_path)
-                    if total_reward > best_score:
-                        best_score =  total_reward
-                        torch.save(action_model.state_dict(), model_checkpoint_save_path)
-
-            ######## inference ############
-            if os.path.exists(model_checkpoint_save_path):
-                action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
-            else:
-                pass
+            action_model.load_state_dict(torch.load(model_checkpoint_save_path, weights_only=True))
+            action_model.to(device)
 
             action_model.eval()
 
             model = get_model_with_activation()
 
             for layer in get_all_layers_before_lora(args.model_name, model):
-                if 'opt' in args.model_name :
+                if 'opt' in args.model_name:
                     weight = layer.fc1.weight.data  # (3072, 768)
                 elif 'phi' in args.model_name:
                     weight = layer.mlp.fc1.weight.data  # (3072, 768)
@@ -917,20 +773,18 @@ if __name__ == "__main__":
             for layer in get_all_layers_before_lora(args.model_name, model):
                 random_slicing(args.model_name, layer, args.sparsity_level)
 
-    #model = torch.load("sliced_model.pt")
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        _ = model(batch['input_ids'].to(model.device))
+        end.record()
+        torch.cuda.synchronize()
+        print(f'Total inference time after: {start.elapsed_time(end):.4f}')
 
-    new_parameters = sum(p.numel() for p in model.parameters())
-    if args.finetune:
-        model.train()
-        model = finetune(args, model, tokenizer, skip_lora=False)
-    model.eval()
+        flops = FlopCountAnalysis(model, batch['input_ids'].to(model.device))
+        tot = flops.total()
+        print ("After flops", tot)
 
-    dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
-
-    print(f'PPL after finetuning: {dataset_ppl2:.4f}')
-    #print(f'Total inference time after: {start.elapsed_time(end):.4f}')
-    print(f'Sparsity achieved: {int((1-new_parameters/orig_parameters)*100)}%')
-
-    if args.no_wandb == False:
-        wandb.log({"PPL After": dataset_ppl2})
-        wandb.log({"Sparsity Achieved": int((1-new_parameters/orig_parameters)*100)})
+        if args.no_wandb == False:
+            wandb.log({"After time": start.elapsed_time(end)})
+            wandb.log({"After flops": tot})

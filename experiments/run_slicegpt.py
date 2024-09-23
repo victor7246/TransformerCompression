@@ -14,6 +14,8 @@ from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, 
 from slicegpt.config import config
 from slicegpt.slicing_scheduler import ConstSlicingScheduler
 
+from torch.profiler import profile, record_function, ProfilerActivity
+from fvcore.nn import FlopCountAnalysis
 
 def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -170,6 +172,17 @@ def slicing_main(args: argparse.Namespace) -> None:
         varied_seqlen=args.varied_seqlen,
         seed=args.seed,
     )
+
+    ppl_eval_loader = data_utils.prepare_dataloader(
+        dataset=train_dataset,
+        tokenizer=tokenizer,
+        max_seqlen=args.ppl_eval_seqlen,
+        batch_size=1,
+        nsamples=args.ppl_eval_nsamples,
+        varied_seqlen=args.varied_seqlen,
+        seed=args.seed,
+    )
+
     test_loader = data_utils.prepare_test_dataloader(
         dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
     )
@@ -211,12 +224,32 @@ def slicing_main(args: argparse.Namespace) -> None:
         utils.cleanup_memory()
 
     #original_param_count = sum(int(p.nelement()) for p in model.parameters())
-    for name, p in model.named_parameters():
-        print (name, p.shape, p.numel())
+    #for name, p in model.named_parameters():
+    #    print (name, p.shape, p.numel())
 
     original_param_count = sum(int(p.numel()) for p in model.parameters())
     logging.info(f'Original model parameters: {original_param_count:,d}')
 
+    for batch in ppl_eval_loader:
+        break
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    _ = model(batch['input_ids'].to(model.device))
+    end.record()
+    torch.cuda.synchronize()
+    print(f'Total inference time before: {start.elapsed_time(end):.4f}')
+
+    flops = FlopCountAnalysis(model, batch['input_ids'].to(model.device))
+    tot = flops.total()
+    print ("Flops", tot)
+
+    if args.no_wandb == False:
+        wandb.log({"Before time": start.elapsed_time(end)})
+        wandb.log({"Before flops": tot})
+
+    '''
     # compute new embedding dimension given the desired sparsity level
     new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
     # round (down) to the nearest multiple of round_interval
@@ -266,8 +299,9 @@ def slicing_main(args: argparse.Namespace) -> None:
 
     reset_model_device()
 
-    for name, p in model.named_parameters():
-        print (name, p.shape, p.numel())
+    #for name, p in model.named_parameters():
+    #    print (name, p.shape, p.numel())
+
     dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
     logging.info(f'After rotating and slicing {dataset_ppl:.4f}')
     wandb.log({"sliced_ppl": dataset_ppl})
@@ -279,6 +313,22 @@ def slicing_main(args: argparse.Namespace) -> None:
     sliced_fraction = 1.0 - sliced_param_count / original_param_count
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
 
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    _ = model(batch['input_ids'].to(model.device))
+    end.record()
+    torch.cuda.synchronize()
+    print(f'Total inference time after: {start.elapsed_time(end):.4f}')
+
+    flops = FlopCountAnalysis(model, batch['input_ids'].to(model.device))
+    tot = flops.total()
+    print ("Flops", tot)
+
+    if args.no_wandb == False:
+        wandb.log({"After time": start.elapsed_time(end)})
+        wandb.log({"After flops": tot})
+    '''
 
 if __name__ == "__main__":
     utils.configure_logging(log_to_console=True, log_to_file=False, level=logging.INFO)
