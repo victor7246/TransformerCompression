@@ -139,7 +139,7 @@ def slicing(model_name, layer, row_indices):
         #        layer.fc2.lora_A.default.weight[:, row_indices]
         #    )
         #except:
-        #    pass 
+        #    pass
 
     elif 'llama' in model_name:
         # slice the intermediate and output weight matrices appropriately
@@ -178,7 +178,7 @@ def slicing(model_name, layer, row_indices):
         #        layer.mlp.down_proj.lora_A.default.weight[:, row_indices]
         #    )
         #except:
-        #    pass 
+        #    pass
 
     elif 'falcon' in model_name:
         # slice the intermediate and output weight matrices appropriately
@@ -205,7 +205,7 @@ def slicing(model_name, layer, row_indices):
         #        layer.mlp.dense_4h_to_h.lora_A.default.weight[:, row_indices]
         #    )
         #except:
-        #    pass 
+        #    pass
 
     return layer
 
@@ -236,6 +236,12 @@ def get_all_layers_before_lora(model_name, model):
         raise ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")    
 
     return all_layers
+
+def get_memory_consumption(model):
+    mem_params = sum([param.nelement()*param.element_size() for param in model.parameters()])
+    mem_bufs = sum([buf.nelement()*buf.element_size() for buf in model.buffers()])
+    mem = mem_params + mem_bufs # in bytes
+    return mem
 
 class SparsityPredictor(torch.nn.Module):
     def __init__(
@@ -306,7 +312,7 @@ def calculate_activation_reward(s1, weight_matrix2):
 
     #_,s1,_ = torch.svd(weight_matrix1)
     _,s2,_ = torch.svd(weight_matrix2)
-    
+
     #dist = calculation(s1.unsqueeze(1),s2.unsqueeze(1))
     dist = stats.ks_2samp(s1.detach().cpu().numpy(), s2.detach().cpu().numpy()).statistic
 
@@ -463,7 +469,7 @@ def _get_parse_args():
     )
 
     parser.add_argument("--seed", type=int, default=42, help="Seed for sampling the calibration data.")
-    
+
     parser.add_argument(
         "--model_name",
         dest="model_name",
@@ -653,7 +659,7 @@ if __name__ == "__main__":
 
     model_checkpoint_save_path = os.path.join(args.model_save_path, \
         "model={}_finetune={}_sparsity={}.ckpt".format(args.model_name.split("/")[-1], "False", args.sparsity_level))
-    
+
     if args.activation.lower() == 'leakysilu':
         act_fn = LeakySiLU()
     elif args.activation.lower() == 'leakygelu':
@@ -701,6 +707,7 @@ if __name__ == "__main__":
     print(f'PPL before finetuning: {dataset_ppl:.4f}')
     
     if args.no_wandb == False:
+        wandb.log({"Memory Before": get_memory_consumption(model_orig)})
         wandb.log({"PPL Before": dataset_ppl})
         #wandb.log({"Inference time before": start.elapsed_time(end)})
         #wandb.log({"pre_finetune_ppl": dataset_ppl})
@@ -798,7 +805,7 @@ if __name__ == "__main__":
                             ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
 
                         state = Variable(cp(weight))
-                        
+
                         # print (weight)
 
                         with torch.autocast(device_type=device, dtype=torch.float16):
@@ -830,7 +837,7 @@ if __name__ == "__main__":
                         count += 1 
 
                         #print (reward)
-                        
+
                     reward_pool = discount_rewards(reward_pool)
 
                     for i in range(len(state_pool)):
@@ -870,7 +877,7 @@ if __name__ == "__main__":
                         episode,
                         "Avg reward",
                         total_reward/count
-                    )  
+                    )
 
                     #if total_loss < best_score:
                     #    best_score =  total_loss
@@ -902,7 +909,7 @@ if __name__ == "__main__":
                     ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
 
                 state = Variable(cp(weight))
-                
+
                 # print (weight)
 
                 with torch.autocast(device_type=device, dtype=torch.float16):
@@ -932,5 +939,6 @@ if __name__ == "__main__":
     print(f'Sparsity achieved: {int((1-new_parameters/orig_parameters)*100)}%')
 
     if args.no_wandb == False:
+        wandb.log({"Memory After": get_memory_consumption(model)})
         wandb.log({"PPL After": dataset_ppl2})
         wandb.log({"Sparsity Achieved": int((1-new_parameters/orig_parameters)*100)})
