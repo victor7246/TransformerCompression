@@ -408,13 +408,20 @@ def finetune(args, model, tokenizer, skip_lora=False, base_model=False):
     else:
         lora_model = model
 
+    log_mode = "wandb" if args.no_wandb == False else 'tensorboard'
+
     if args.finetune:
         lora_model.print_trainable_parameters()
         # create optimizer and scheduler
         optimizer, lr_scheduler = get_optimizer_and_scheduler(lora_model, finetune_ds["train"], args)
 
+        try:
+            wandb_trainer_name = args.wandb_trainer_name
+        except:
+            wandb_trainer_name = 'huggingface'
+
         training_args = TrainingArguments(
-            output_dir=args.st_checkpoint_dir,  # output directory
+            #output_dir=args.st_checkpoint_dir,  # output directory
             num_train_epochs=args.epochs,
             per_device_train_batch_size=args.finetune_train_batch_size,  # batch size per device during training
             per_device_eval_batch_size=args.finetune_test_batch_size,  # batch size for evaluation
@@ -425,10 +432,11 @@ def finetune(args, model, tokenizer, skip_lora=False, base_model=False):
             load_best_model_at_end=True,
             eval_steps=args.eval_steps,
             evaluation_strategy=args.evaluation_strategy,
-            report_to='tensorboard',
+            report_to=log_mode,
             metric_for_best_model="eval_loss",
             greater_is_better=False,  # lower eval_loss is better,
             gradient_checkpointing=True,
+            output_dir=wandb_trainer_name
         )
 
         trainer = CustomTrainer(
@@ -660,6 +668,10 @@ if __name__ == "__main__":
     model_checkpoint_save_path = os.path.join(args.model_save_path, \
         "model={}_finetune={}_sparsity={}.ckpt".format(args.model_name.split("/")[-1], "False", args.sparsity_level))
 
+    wandb_trainer_name = "model={}_sparsity={}_activation={}".format(args.model_name.split("/")[-1], args.sparsity_level, args.activation.lower())
+
+    args.wandb_trainer_name = wandb_trainer_name
+
     if args.activation.lower() == 'leakysilu':
         act_fn = LeakySiLU()
     elif args.activation.lower() == 'leakygelu':
@@ -706,11 +718,11 @@ if __name__ == "__main__":
 
     print(f'PPL before finetuning: {dataset_ppl:.4f}')
     
-    if args.no_wandb == False:
-        wandb.log({"Memory Before": get_memory_consumption(model_orig)})
-        wandb.log({"PPL Before": dataset_ppl})
-        #wandb.log({"Inference time before": start.elapsed_time(end)})
-        #wandb.log({"pre_finetune_ppl": dataset_ppl})
+    #if args.no_wandb == False:
+    #    wandb.log({"Memory Before": get_memory_consumption(model_orig)})
+    #    wandb.log({"PPL Before": dataset_ppl})
+    #    #wandb.log({"Inference time before": start.elapsed_time(end)})
+    #    #wandb.log({"pre_finetune_ppl": dataset_ppl})
 
     orig_parameters = sum(p.numel() for p in model_adapter.model.parameters())
 
@@ -938,7 +950,7 @@ if __name__ == "__main__":
     #print(f'Total inference time after: {start.elapsed_time(end):.4f}')
     print(f'Sparsity achieved: {int((1-new_parameters/orig_parameters)*100)}%')
 
-    if args.no_wandb == False:
-        wandb.log({"Memory After": get_memory_consumption(model)})
-        wandb.log({"PPL After": dataset_ppl2})
-        wandb.log({"Sparsity Achieved": int((1-new_parameters/orig_parameters)*100)})
+    #if args.no_wandb == False:
+    #    wandb.log({"Memory After": get_memory_consumption(model)})
+    #    wandb.log({"PPL After": dataset_ppl2})
+    #    wandb.log({"Sparsity Achieved": int((1-new_parameters/orig_parameters)*100)})

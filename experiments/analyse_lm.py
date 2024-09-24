@@ -122,9 +122,6 @@ def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
     parser.add_argument(
         "--sparsity", type=float, default=0.0, help="A measure of how much slicing is applied (in the range [0, 1))"
     )
-    parser.add_argument(
-        "--checkpoint_sparsity", type=float, default=0.0, help="A measure of how much slicing is applied (in the range [0, 1))"
-    )
     path_group.add_argument(
         "--activation",
         type=str,
@@ -334,11 +331,8 @@ def eval_main(args: argparse.Namespace) -> None:
             else:
                 raise ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
             
-            if args.checkpoint_sparsity == 0:
-                args.checkpoint_sparsity = args.sparsity
-
             model_checkpoint_save_path = os.path.join(args.model_save_path, \
-            "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], "False", args.checkpoint_sparsity))
+            "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], "False", args.sparsity))
 
             action_model.to(config.device)
             
@@ -367,10 +361,8 @@ def eval_main(args: argparse.Namespace) -> None:
                     with torch.no_grad():
                         o = action_model(state)  # (3072, )
                         y = Bernoulli(o).sample()
-                        feat_len = state.shape[0]
                         #y = (o > args.sparsity).long().to(o.device)  # (3072, )
-                        #row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
-                        row_indices = torch.multinomial(o, int((1 - args.sparsity)*feat_len), replacement=False).sort().values
+                        row_indices = (y != 0).nonzero()[:, 0]  # len less than 3072
 
                 slicing(args.model, layer, row_indices)
         else:
@@ -397,79 +389,13 @@ def eval_main(args: argparse.Namespace) -> None:
     if args.finetune:
         model = finetune(args, model, tokenizer, skip_lora=False)
 
-    hflm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
+    from transformers import pipeline
 
-    if args.tasks is None:
-        task_names = tasks.ALL_TASKS
-    else:
-        task_names = lm_eval_utils.pattern_match(args.tasks, ALL_TASKS)
+    pipe = pipeline("text-generation", model=model, tokenizer=args.model, device=config.device, max_new_tokens=256)
 
-    logging.info(f"Selected Tasks: {task_names}")
+    base_prompt = "<s>[INST]\n\n What is photosynthesis? [/INST]"
 
-    for task in task_names:
-        if task not in TASK_METRIC_MAP:
-            raise NotImplementedError(
-                f"Please specify the metric to use for {task} in TASK_METRIC_MAP. Available info {TASK_METRIC_MAP}"
-            )
-
-    # results is a dict with keys: results, configs, versions, n-shot, samples, config, git_hash
-    results_main = lm_eval.simple_evaluate(hflm, tasks=task_names, num_fewshot=args.num_fewshot, batch_size=args.batch_size, log_samples=True)
-    
-    results = results_main[
-        'results'
-    ]
-
-    #print (results_main["samples"])
-
-    import json
-    with open("model={}_sparsity={}.json".format(args.model.split("/")[-1], args.sparsity), 'w') as fp:
-        json.dump(results_main["samples"], fp)
-
-    #from lm_eval.loggers import WandbLogger
-    #wandb_logger = WandbLogger()  # or empty if wandb.init(...) already called before
-    #wandb_logger.post_init(results_main)
-    #wandb_logger.log_eval_result()
-    #wandb_logger.log_eval_samples(results_main["samples"])  # if log_samples
-
-    logging.info(results)
-
-    # name the output file
-    outfile = f"{args.save_dir}/full_results_{args.num_fewshot}_shot"
-    #if args.use_slicing:
-    #    if args.slice_with_action_model:
-    #        outfile += "_actionModelSlicing"
-    #    else:
-    #        outfile += "_uniformSlicing"
-    outfile += ".json"
-
-    with open(outfile, "w") as f:
-        json.dump(results, f, indent=4)
-
-    metric_vals = {task: round(result.get(TASK_METRIC_MAP[task]), 4) for task, result in results.items()}
-    acc_avg = calculate_avg_accuracy(task_names, results)
-    metric_vals['average'] = round(acc_avg, 4)
-
-    # save this in the task results output file
-    task_outfile = f"{args.save_dir}/{args.num_fewshot}_shot_task_results"
-    #if args.use_slicing:
-    #    if args.slice_with_action_model:
-    #        task_outfile += "_actionModelSlicing"
-    #    else:
-    #        task_outfile += "_uniformSlicing"
-    task_outfile += ".json"
-
-    with open(task_outfile, "w") as f:
-        json.dump(metric_vals, f, indent=4)
-
-    if args.no_wandb == False:
-        wandb.log(metric_vals)
-
-    if args.no_wandb == False:
-        wandb.log({'acc_avg': acc_avg})
-
-    logging.info(json.dumps(metric_vals, indent=4))
-    logging.info(f"Average accuracy across tasks: {acc_avg}")
-
+    print (pipe(base_prompt, do_sample=False))
 
 if __name__ == "__main__":
     # Use the logger from lm_eval, adding a file handler to write the log to file

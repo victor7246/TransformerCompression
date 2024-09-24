@@ -1,85 +1,85 @@
 {
     "arc_challenge": {
-        "acc,none": 0.39078498293515357,
-        "acc_stderr,none": 0.014258563880513803,
-        "acc_norm,none": 0.39419795221843,
-        "acc_norm_stderr,none": 0.014280522667467148,
+        "acc,none": 0.26535836177474403,
+        "acc_stderr,none": 0.012902554762313832,
+        "acc_norm,none": 0.2841296928327645,
+        "acc_norm_stderr,none": 0.013179442447653811,
         "alias": "arc_challenge"
     },
     "arc_easy": {
-        "acc,none": 0.6931818181818182,
-        "acc_stderr,none": 0.00946307583519877,
-        "acc_norm,none": 0.6759259259259259,
-        "acc_norm_stderr,none": 0.009603728850095139,
+        "acc,none": 0.5071548821548821,
+        "acc_stderr,none": 0.010258733022446362,
+        "acc_norm,none": 0.4861111111111111,
+        "acc_norm_stderr,none": 0.010255824507190398,
         "alias": "arc_easy"
     },
     "hellaswag": {
-        "acc,none": 0.5449113722366062,
-        "acc_stderr,none": 0.004969611554685557,
-        "acc_norm,none": 0.7113124875522804,
-        "acc_norm_stderr,none": 0.004522262128177374,
+        "acc,none": 0.37502489543915557,
+        "acc_stderr,none": 0.004831399218500335,
+        "acc_norm,none": 0.4825731925911173,
+        "acc_norm_stderr,none": 0.004986749760948733,
         "alias": "hellaswag"
     },
     "mmlu_abstract_algebra": {
         "alias": "abstract_algebra",
-        "acc,none": 0.3,
-        "acc_stderr,none": 0.04605661864718382
+        "acc,none": 0.21,
+        "acc_stderr,none": 0.040936018074033236
     },
     "mmlu_business_ethics": {
         "alias": "business_ethics",
-        "acc,none": 0.29,
-        "acc_stderr,none": 0.045604802157206865
+        "acc,none": 0.3,
+        "acc_stderr,none": 0.04605661864718382
     },
     "mmlu_college_computer_science": {
         "alias": "college_computer_science",
-        "acc,none": 0.23,
-        "acc_stderr,none": 0.04229525846816507
+        "acc,none": 0.22,
+        "acc_stderr,none": 0.041633319989322654
     },
     "mmlu_college_mathematics": {
         "alias": "college_mathematics",
-        "acc,none": 0.29,
-        "acc_stderr,none": 0.045604802157206865
+        "acc,none": 0.21,
+        "acc_stderr,none": 0.040936018074033236
     },
     "mmlu_conceptual_physics": {
         "alias": "conceptual_physics",
-        "acc,none": 0.28085106382978725,
-        "acc_stderr,none": 0.029379170464124797
+        "acc,none": 0.25957446808510637,
+        "acc_stderr,none": 0.02865917937429237
     },
     "mmlu_formal_logic": {
         "alias": "formal_logic",
-        "acc,none": 0.24603174603174602,
-        "acc_stderr,none": 0.03852273364924316
+        "acc,none": 0.23809523809523808,
+        "acc_stderr,none": 0.03809523809523809
     },
     "mmlu_global_facts": {
         "alias": "global_facts",
-        "acc,none": 0.2,
-        "acc_stderr,none": 0.04020151261036849
+        "acc,none": 0.18,
+        "acc_stderr,none": 0.03861229196653691
     },
     "mmlu_machine_learning": {
         "alias": "machine_learning",
-        "acc,none": 0.2857142857142857,
-        "acc_stderr,none": 0.042878587513404585
+        "acc,none": 0.3125,
+        "acc_stderr,none": 0.043994650575715215
     },
     "mmlu_miscellaneous": {
         "alias": "miscellaneous",
-        "acc,none": 0.3524904214559387,
-        "acc_stderr,none": 0.01708415024408134
+        "acc,none": 0.23243933588761176,
+        "acc_stderr,none": 0.015104550008905652
     },
     "mmlu_philosophy": {
         "alias": "philosophy",
-        "acc,none": 0.2604501607717042,
-        "acc_stderr,none": 0.0249267232248456
+        "acc,none": 0.17684887459807075,
+        "acc_stderr,none": 0.021670058885510792
     },
     "piqa": {
-        "acc,none": 0.7589771490750816,
-        "acc_stderr,none": 0.009979042717267253,
-        "acc_norm,none": 0.7687704026115343,
-        "acc_norm_stderr,none": 0.009837063180625381,
+        "acc,none": 0.6414581066376496,
+        "acc_stderr,none": 0.011189212572356472,
+        "acc_norm,none": 0.6632208922742111,
+        "acc_norm_stderr,none": 0.011026738925250986,
         "alias": "piqa"
     },
     "winogrande": {
-        "acc,none": 0.6637726913970008,
-        "acc_stderr,none": 0.013277286593993463,
+        "acc,none": 0.5580110497237569,
+        "acc_stderr,none": 0.013957584079108864,
         "alias": "winogrande"
     }
 }
