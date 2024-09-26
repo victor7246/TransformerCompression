@@ -1,23 +1,23 @@
 {
     "arc_challenge": {
-        "acc,none": 0.26535836177474403,
-        "acc_stderr,none": 0.012902554762313832,
-        "acc_norm,none": 0.2841296928327645,
-        "acc_norm_stderr,none": 0.013179442447653811,
+        "acc,none": 0.22866894197952217,
+        "acc_stderr,none": 0.012272853582540892,
+        "acc_norm,none": 0.24146757679180889,
+        "acc_norm_stderr,none": 0.012506564839739446,
         "alias": "arc_challenge"
     },
     "arc_easy": {
-        "acc,none": 0.5071548821548821,
-        "acc_stderr,none": 0.010258733022446362,
-        "acc_norm,none": 0.4861111111111111,
-        "acc_norm_stderr,none": 0.010255824507190398,
+        "acc,none": 0.2988215488215488,
+        "acc_stderr,none": 0.009392656275408704,
+        "acc_norm,none": 0.31523569023569026,
+        "acc_norm_stderr,none": 0.009533589368506065,
         "alias": "arc_easy"
     },
     "hellaswag": {
-        "acc,none": 0.37502489543915557,
-        "acc_stderr,none": 0.004831399218500335,
-        "acc_norm,none": 0.4825731925911173,
-        "acc_norm_stderr,none": 0.004986749760948733,
+        "acc,none": 0.2925712009559849,
+        "acc_stderr,none": 0.004540134005059956,
+        "acc_norm,none": 0.31447918741286596,
+        "acc_norm_stderr,none": 0.004633592029066054,
         "alias": "hellaswag"
     },
     "mmlu_abstract_algebra": {
@@ -27,59 +27,59 @@
     },
     "mmlu_business_ethics": {
         "alias": "business_ethics",
-        "acc,none": 0.3,
-        "acc_stderr,none": 0.04605661864718382
+        "acc,none": 0.27,
+        "acc_stderr,none": 0.04461960433384737
     },
     "mmlu_college_computer_science": {
         "alias": "college_computer_science",
-        "acc,none": 0.22,
-        "acc_stderr,none": 0.041633319989322654
+        "acc,none": 0.26,
+        "acc_stderr,none": 0.0440844002276808
     },
     "mmlu_college_mathematics": {
         "alias": "college_mathematics",
-        "acc,none": 0.21,
-        "acc_stderr,none": 0.040936018074033236
+        "acc,none": 0.23,
+        "acc_stderr,none": 0.04229525846816507
     },
     "mmlu_conceptual_physics": {
         "alias": "conceptual_physics",
-        "acc,none": 0.25957446808510637,
-        "acc_stderr,none": 0.02865917937429237
+        "acc,none": 0.26382978723404255,
+        "acc_stderr,none": 0.028809989854102946
     },
     "mmlu_formal_logic": {
         "alias": "formal_logic",
-        "acc,none": 0.23809523809523808,
-        "acc_stderr,none": 0.03809523809523809
+        "acc,none": 0.2222222222222222,
+        "acc_stderr,none": 0.03718489006818113
     },
     "mmlu_global_facts": {
         "alias": "global_facts",
-        "acc,none": 0.18,
-        "acc_stderr,none": 0.03861229196653691
+        "acc,none": 0.16,
+        "acc_stderr,none": 0.03684529491774706
     },
     "mmlu_machine_learning": {
         "alias": "machine_learning",
-        "acc,none": 0.3125,
-        "acc_stderr,none": 0.043994650575715215
+        "acc,none": 0.32142857142857145,
+        "acc_stderr,none": 0.04432804055291519
     },
     "mmlu_miscellaneous": {
         "alias": "miscellaneous",
-        "acc,none": 0.23243933588761176,
-        "acc_stderr,none": 0.015104550008905652
+        "acc,none": 0.2503192848020434,
+        "acc_stderr,none": 0.01549108895149454
     },
     "mmlu_philosophy": {
         "alias": "philosophy",
-        "acc,none": 0.17684887459807075,
-        "acc_stderr,none": 0.021670058885510792
+        "acc,none": 0.18971061093247588,
+        "acc_stderr,none": 0.0222681962587832
     },
     "piqa": {
-        "acc,none": 0.6414581066376496,
-        "acc_stderr,none": 0.011189212572356472,
-        "acc_norm,none": 0.6632208922742111,
-        "acc_norm_stderr,none": 0.011026738925250986,
+        "acc,none": 0.5544069640914037,
+        "acc_stderr,none": 0.011596554080987587,
+        "acc_norm,none": 0.5473340587595212,
+        "acc_norm_stderr,none": 0.01161343165087302,
         "alias": "piqa"
     },
     "winogrande": {
-        "acc,none": 0.5580110497237569,
-        "acc_stderr,none": 0.013957584079108864,
+        "acc,none": 0.5224940805051302,
+        "acc_stderr,none": 0.014038257824059859,
         "alias": "winogrande"
     }
 }

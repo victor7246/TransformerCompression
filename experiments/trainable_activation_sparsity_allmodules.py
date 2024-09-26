@@ -209,6 +209,34 @@ def slicing(model_name, layer, row_indices):
 
     return layer
 
+def slicing_qkv(model_name, layer, row_indices):
+    if 'llama' in model_name:
+        # slice the intermediate and output weight matrices appropriately
+        layer.self_attn.k_proj.out_features = len(row_indices)
+        layer.self_attn.k_proj.weight.data = (
+            layer.self_attn.k_proj.weight[row_indices, :]
+        )
+
+        layer.self_attn.q_proj.out_features = len(row_indices)
+        layer.self_attn.q_proj.weight.data = (
+            layer.self_attn.q_proj.weight[row_indices, :]
+        )
+
+        layer.self_attn.v_proj.out_features = len(row_indices)
+        layer.self_attn.v_proj.weight.data = (
+            layer.self_attn.v_proj.weight[row_indices, :]
+        )
+
+        layer.self_attn.o_proj.in_features = len(row_indices)
+        layer.self_attn.o_proj.weight.data = (
+            layer.self_attn.o_proj.weight[:, row_indices]
+        )
+
+    else:
+        raise ValueError("qkv slicing only works with llama2")
+
+    return layer
+
 def get_all_layers(model_name, model):
     if 'opt' in model_name:
         all_layers = model.base_model.model.model.decoder.layers
@@ -243,6 +271,12 @@ def get_memory_consumption(model):
     mem = mem_params + mem_bufs # in bytes
     return mem
 
+def get_closest_even_number(x, binsize):
+    if int(x//binsize)%2 == 0:
+        return int (binsize * int(x//binsize))
+    else:
+        return int (binsize * int(x//binsize) - binsize)
+
 class SparsityPredictor(torch.nn.Module):
     def __init__(
         self, hidden_size=768, intermediate_size=3072, sparsity_level=0.2
@@ -252,6 +286,7 @@ class SparsityPredictor(torch.nn.Module):
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.proj_intermediate = nn.Linear(hidden_size, intermediate_size, bias=True)
+        self.proj_query = nn.Linear(hidden_size, hidden_size, bias=True)
 
         self.row_sparsities = nn.Parameter(
             torch.rand(intermediate_size, 1), requires_grad=True
@@ -259,6 +294,14 @@ class SparsityPredictor(torch.nn.Module):
         self.row_sparsities_bias = nn.Parameter(
             torch.rand(1, 1), requires_grad=True
         )  # (3072, 1)
+
+        self.row_sparsities_query = nn.Parameter(
+            torch.rand(hidden_size, 1), requires_grad=True
+        )  # (3072, 1)
+        self.row_sparsities_bias_query = nn.Parameter(
+            torch.rand(1, 1), requires_grad=True
+        )  # (3072, 1)
+
         # self.col_sparsities = nn.Parameter(torch.rand(hidden_size, 1), requires_grad=True)  # (768, 1)
         self.sparsity_level = sparsity_level
         self.density_level = 1-sparsity_level
@@ -283,7 +326,8 @@ class SparsityPredictor(torch.nn.Module):
             proj_ = self.proj_intermediate(weight_matrix)  # (3072, 3072)
             alpha = nn.Sigmoid()(proj_ @ self.row_sparsities)[:, 0]  # (3072, )
         else:
-            raise ValueError("The layer does not support sparsity operation")
+            proj_ = self.proj_query(weight_matrix)  # (3072, 3072)
+            alpha = nn.Sigmoid()(proj_ @ self.row_sparsities_query)[:, 0]  # (3072, )
 
         self.alpha = alpha
 
@@ -714,6 +758,8 @@ if __name__ == "__main__":
 
     model_adapter.model.eval()
 
+    #print (model_adapter.model)
+
     dataset_ppl = gpu_utils.evaluate_ppl(model_adapter.model, config.pad_token_id, ppl_eval_loader)
 
     print(f'PPL before finetuning: {dataset_ppl:.4f}')
@@ -726,26 +772,36 @@ if __name__ == "__main__":
 
     orig_parameters = sum(p.numel() for p in model_adapter.model.parameters())
 
+    print (orig_parameters)
+
     all_svds_main_model = {}
     for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model_adapter.model)):
-        if 'opt' in args.model_name :
-            main_w = layer.fc1.weight.data 
-        elif 'phi' in args.model_name:
-            main_w = layer.mlp.fc1.weight.data 
-        elif 'llama' in args.model_name:
-            main_w = layer.mlp.gate_proj.weight.data 
-        elif 'falcon' in args.model_name:
-            main_w = layer.mlp.dense_h_to_4h.weight.data 
-        else:
-            ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
+        if i <= 9999:
+            if 'opt' in args.model_name :
+                main_w = layer.fc1.weight.data 
+            elif 'phi' in args.model_name:
+                main_w = layer.mlp.fc1.weight.data 
+            elif 'llama' in args.model_name:
+                main_w = layer.mlp.gate_proj.weight.data 
+            elif 'falcon' in args.model_name:
+                main_w = layer.mlp.dense_h_to_4h.weight.data 
+            else:
+                ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
 
-        if main_w.dtype == torch.float16:
-            main_w = main_w.to(torch.float32)
-        
-        _,s1,_ = torch.svd(main_w)
+            if main_w.dtype == torch.float16:
+                main_w = main_w.to(torch.float32)
+            
+            _,s1,_ = torch.svd(main_w)
 
-        all_svds_main_model[i] = s1
+            all_svds_main_model[str(i)+"inter"] = s1
 
+            if 'llama' in args.model_name:
+                main_w = layer.self_attn.k_proj.weight.data 
+                if main_w.dtype == torch.float16:
+                    main_w = main_w.to(torch.float32)
+                _,s1,_ = torch.svd(main_w)
+                all_svds_main_model[str(i)+"key"] = s1
+    
     del model_adapter
 
     gc.collect()
@@ -805,50 +861,76 @@ if __name__ == "__main__":
                     total_reward = 0
 
                     for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model)):
-                        if 'opt' in args.model_name:
-                            weight = layer.fc1.weight.data  # (3072, 768)
-                        elif 'phi' in args.model_name:
-                            weight = layer.mlp.fc1.weight.data  # (3072, 768)
-                        elif 'llama' in args.model_name:
-                            weight = layer.mlp.gate_proj.weight.data
-                        elif 'falcon' in args.model_name:
-                            weight = layer.mlp.dense_h_to_4h.weight.data
-                        else:
-                            ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
+                        if i <= 9999:
+                            if 'opt' in args.model_name:
+                                weight = layer.fc1.weight.data  # (3072, 768)
+                            elif 'phi' in args.model_name:
+                                weight = layer.mlp.fc1.weight.data  # (3072, 768)
+                            elif 'llama' in args.model_name:
+                                weight = layer.mlp.gate_proj.weight.data
+                            elif 'falcon' in args.model_name:
+                                weight = layer.mlp.dense_h_to_4h.weight.data
+                            else:
+                                ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
 
-                        state = Variable(cp(weight))
+                            state = Variable(cp(weight))
 
-                        # print (weight)
+                            # print (weight)
 
-                        with torch.autocast(device_type=device, dtype=torch.float16):
-                            o = action_model(state)  # (3072, )
-                            feat_len = state.shape[0]
-                            row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False).sort().values
+                            with torch.autocast(device_type=device, dtype=torch.float16):
+                                o = action_model(state)  # (3072, )
+                                feat_len = state.shape[0]
+                                o = torch.nan_to_num(o).to(o.device)
+                                row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False).sort().values
+                                
+                            slicing(args.model_name, layer, row_indices)
+
+                            if 'llama' in args.model_name:
+                                weight = layer.self_attn.k_proj.weight.data
+                                state2 = Variable(cp(weight))
+                                with torch.autocast(device_type=device, dtype=torch.float16):
+                                    o = action_model(state2)  # (3072, )
+                                    feat_len = state2.shape[0]
+                                    o = torch.nan_to_num(o).to(o.device)
+                                    slice_num = get_closest_even_number(int((1 - args.sparsity_level)*feat_len), layer.self_attn.config.num_attention_heads)
+                                    row_indices2 = torch.multinomial(o, slice_num, replacement=False).sort().values
                             
-                        slicing(args.model_name, layer, row_indices)
+                                slicing_qkv(args.model_name, layer, row_indices2)
 
-                        # get the updated rewards
-                        if 'opt' in args.model_name :
-                            new_w = layer.fc1.weight.data 
-                        elif 'phi' in args.model_name:
-                            new_w = layer.mlp.fc1.weight.data 
-                        elif 'llama' in args.model_name:
-                            new_w = layer.mlp.gate_proj.weight.data
-                        elif 'falcon' in args.model_name:
-                            new_w = layer.mlp.dense_h_to_4h.weight.data
-                        else:
-                            ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
+                            else:
+                                state2 = None
 
-                        reward = calculate_activation_reward(all_svds_main_model[i], new_w) #- action_model.calculate_l1_loss()
+                            # get the updated rewards
+                            if 'opt' in args.model_name :
+                                new_w = layer.fc1.weight.data 
+                            elif 'phi' in args.model_name:
+                                new_w = layer.mlp.fc1.weight.data 
+                            elif 'llama' in args.model_name:
+                                new_w = layer.mlp.gate_proj.weight.data
+                            elif 'falcon' in args.model_name:
+                                new_w = layer.mlp.dense_h_to_4h.weight.data
+                            else:
+                                ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
 
-                        state_pool.append(state)
-                        action_pool.append(row_indices)
-                        reward_pool.append(reward.item())
+                            reward = calculate_activation_reward(all_svds_main_model[str(i)+"inter"], new_w) #- action_model.calculate_l1_loss()
 
-                        total_reward += reward.item()
-                        count += 1 
+                            state_pool.append(state)
+                            action_pool.append(row_indices)
+                            reward_pool.append(reward.item())
 
-                        #print (reward)
+                            if 'llama' in args.model_name:
+                                new_w = layer.self_attn.k_proj.weight.data
+                                reward2 = calculate_activation_reward(all_svds_main_model[str(i)+"key"], new_w)
+
+                            if state2 is not None:
+                                state_pool.append(state2)
+                                action_pool.append(row_indices2)
+                                reward_pool.append(reward2.item())
+
+                            total_reward += reward.item() + reward2.item()
+                            count += 1 
+
+                            #print (reward)
 
                     reward_pool = discount_rewards(reward_pool)
 
@@ -908,29 +990,48 @@ if __name__ == "__main__":
 
             model = get_model_with_activation()
 
-            for layer in get_all_layers_before_lora(args.model_name, model):
-                if 'opt' in args.model_name :
-                    weight = layer.fc1.weight.data  # (3072, 768)
-                elif 'phi' in args.model_name:
-                    weight = layer.mlp.fc1.weight.data  # (3072, 768)
-                elif 'llama' in args.model_name:
-                    weight = layer.mlp.gate_proj.weight.data
-                elif 'falcon' in args.model_name:
-                    weight = layer.mlp.dense_h_to_4h.weight.data
-                else:
-                    ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
+            for i, layer in enumerate(get_all_layers_before_lora(args.model_name, model)):
+                if i <= 9999:
+                    if 'opt' in args.model_name :
+                        weight = layer.fc1.weight.data  # (3072, 768)
+                    elif 'phi' in args.model_name:
+                        weight = layer.mlp.fc1.weight.data  # (3072, 768)
+                    elif 'llama' in args.model_name:
+                        weight = layer.mlp.gate_proj.weight.data
+                    elif 'falcon' in args.model_name:
+                        weight = layer.mlp.dense_h_to_4h.weight.data
+                    else:
+                        ValueError("Model type is not supported. Only OPT, Phi, Llama and Falcon models are supported.")
 
-                state = Variable(cp(weight))
+                    state = Variable(cp(weight))
 
-                # print (weight)
+                    # print (weight)
 
-                with torch.autocast(device_type=device, dtype=torch.float16):
-                    with torch.no_grad():
-                        o = action_model(state)  # (3072, )
-                        feat_len = state.shape[0]
-                        row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False).sort().values
+                    with torch.autocast(device_type=device, dtype=torch.float16):
+                        with torch.no_grad():
+                            o = action_model(state)  # (3072, )
+                            feat_len = state.shape[0]
+                            o = torch.nan_to_num(o).to(o.device)
+                            row_indices = torch.multinomial(o, int((1 - args.sparsity_level)*feat_len), replacement=False).sort().values
 
-                slicing(args.model_name, layer, row_indices)
+                    slicing(args.model_name, layer, row_indices)
+
+                    if 'llama' in args.model_name:
+                        weight = layer.self_attn.k_proj.weight.data
+                        state = Variable(cp(weight))
+                        with torch.autocast(device_type=device, dtype=torch.float16):
+                            with torch.no_grad():
+                                o = action_model(state)  # (3072, )
+                                feat_len = state.shape[0]
+                                o = torch.nan_to_num(o).to(o.device)
+                                slice_num = get_closest_even_number(int((1 - args.sparsity_level)*feat_len), layer.self_attn.config.num_attention_heads)
+                                row_indices2 = torch.multinomial(o, slice_num, replacement=False).sort().values
+                            
+                            slicing_qkv(args.model_name, layer, row_indices2)
+                            layer.self_attn.head_dim = int(slice_num//layer.self_attn.config.num_attention_heads)
+                            #layer.self_attn.max_position_embeddings = int(slice_num//layer.self_attn.config.num_attention_heads) - 1
+                            layer.self_attn._init_rope()
+                            layer.self_attn.rotary_emb.to(device)
         else:
             model = get_model_with_activation()
             for layer in get_all_layers_before_lora(args.model_name, model):
@@ -938,7 +1039,12 @@ if __name__ == "__main__":
 
     #model = torch.load("sliced_model.pt")
 
+    print (model)
+
     new_parameters = sum(p.numel() for p in model.parameters())
+
+    print (new_parameters)
+
     if args.finetune:
         model.train()
         model = finetune(args, model, tokenizer, skip_lora=False)
