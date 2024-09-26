@@ -936,6 +936,9 @@ if __name__ == "__main__":
             for layer in get_all_layers_before_lora(args.model_name, model):
                 random_slicing(args.model_name, layer, args.sparsity_level)
 
+    else:
+        model = get_model_with_activation()
+        
     #model = torch.load("sliced_model.pt")
 
     new_parameters = sum(p.numel() for p in model.parameters())

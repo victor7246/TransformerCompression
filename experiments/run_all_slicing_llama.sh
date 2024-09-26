@@ -9,12 +9,11 @@ TF_CPP_MIN_LOG_LEVEL=2 TF_ENABLE_ONEDNN_OPTS=1 CUDA_LAUNCH_BLOCKING=0 CUDA_VISIB
     --log DEBUG \
     --use_gpu \
     --model_name ${model}  \
-    --num_episodes 10\
+    --num_episodes 10 \
     --learning-rate-action 0.0005 \
     --sparsity_level ${sparsity_level} \
     --model_save_path "../models2/" \
-    --sparsity_technique ${sparsity_technique} \
-    --no-wandb
+    --sparsity_technique ${sparsity_technique} 
 
 done  
 done
