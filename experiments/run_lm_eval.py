@@ -100,6 +100,12 @@ def eval_arg_parser(interactive: bool = True) -> argparse.Namespace:
         default="facebook/opt-125m",
         help="Model to load",
     )
+    parser.add_argument(
+        "--nlayers",
+        type=str,
+        default=-1,
+        help="Number of layers of the evaluation model",
+    )
     path_group = parser.add_mutually_exclusive_group()
     path_group.add_argument(
         "--model-path",
@@ -337,8 +343,11 @@ def eval_main(args: argparse.Namespace) -> None:
             if args.checkpoint_sparsity == 0:
                 args.checkpoint_sparsity = args.sparsity
 
+            if args.slicing_model = '':
+                args.slicing_model = args.model
+
             model_checkpoint_save_path = os.path.join(args.model_save_path, \
-            "model={}_finetune={}_sparsity={}.ckpt".format(args.model.split("/")[-1], "False", args.checkpoint_sparsity))
+            "model={}_finetune={}_sparsity={}.ckpt".format(args.slicing_model.split("/")[-1], "False", args.checkpoint_sparsity))
 
             action_model.to(config.device)
             

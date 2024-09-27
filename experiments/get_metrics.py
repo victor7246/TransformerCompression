@@ -25,6 +25,9 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from fvcore.nn import FlopCountAnalysis
 import gc
 
+import time
+start_time = time.time()
+
 import wandb
 import transformers
 from transformers import (
@@ -696,23 +699,12 @@ if __name__ == "__main__":
 
     model_adapter.model.eval()
 
-    for batch in ppl_eval_loader:
-        break
-    
-    #start = torch.cuda.Event(enable_timing=True)
-    #end = torch.cuda.Event(enable_timing=True)
-    #start.record()
-    #_ = model_adapter.model(batch['input_ids'].to(model_adapter.model.device))
-    #end.record()
-    #torch.cuda.synchronize()
-    #print(f'Total inference time before: {start.elapsed_time(end):.4f}')
+    start_time = time.time()
 
-    #flops = FlopCountAnalysis(model_adapter.model, batch['input_ids'].to(model_adapter.model.device))
-    #tot = flops.total()
-    #print ("Before flops", tot)
+    dataset_ppl = gpu_utils.evaluate_ppl(model_adapter.model, config.pad_token_id, ppl_eval_loader)
 
-    #if args.no_wandb == False:
-    #    wandb.log({"Before time": start.elapsed_time(end)})
+    if args.no_wandb == False:
+        wandb.log({"Before time": time.time() - start_time})
     #    wandb.log({"Before flops": tot})
 
     del model_adapter
@@ -773,18 +765,23 @@ if __name__ == "__main__":
             for layer in get_all_layers_before_lora(args.model_name, model):
                 random_slicing(args.model_name, layer, args.sparsity_level)
 
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        _ = model(batch['input_ids'].to(model.device))
-        end.record()
-        torch.cuda.synchronize()
-        print(f'Total inference time after: {start.elapsed_time(end):.4f}')
+        model.eval()
+
+        start_time = time.time()
+        dataset_ppl2 = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, ppl_eval_loader)
+
+        #start = torch.cuda.Event(enable_timing=True)
+        #end = torch.cuda.Event(enable_timing=True)
+        #start.record()
+        #_ = model(batch['input_ids'].to(model.device))
+        #end.record()
+        #torch.cuda.synchronize()
+        #print(f'Total inference time after: {start.elapsed_time(end):.4f}')
 
         flops = FlopCountAnalysis(model, batch['input_ids'].to(model.device))
         tot = flops.total()
         print ("After flops", tot)
 
         if args.no_wandb == False:
-            wandb.log({"After time": start.elapsed_time(end)})
+            wandb.log({"After time": time.time() - start_time})
             wandb.log({"After flops": tot})

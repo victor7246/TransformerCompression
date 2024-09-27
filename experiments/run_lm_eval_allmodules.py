@@ -387,6 +387,8 @@ def eval_main(args: argparse.Namespace) -> None:
                             o = torch.nan_to_num(o).to(o.device)
                             row_indices2 = torch.multinomial(o, slice_num, replacement=False).sort().values
                         
+                        layer.hidden_size = slice_num
+                        model.config.hidden_size = slice_num
                         slicing_qkv(args.model_name, layer, row_indices2)
                         layer.self_attn.head_dim = int(slice_num//layer.self_attn.config.num_attention_heads)
                         #layer.self_attn.max_position_embeddings = int(slice_num//layer.self_attn.config.num_attention_heads) - 1
@@ -412,7 +414,7 @@ def eval_main(args: argparse.Namespace) -> None:
             else:
                 ValueError("Model type is not supported. Only OPT, Llama and Falcon models are supported.")
 
-
+    print(model)
     if args.finetune:
         model = finetune(args, model, tokenizer, skip_lora=False)
 
